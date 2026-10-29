@@ -35,6 +35,32 @@ npm start
 
 `npm start` 同时提供 API 和 `dist/client` 静态页面，默认 http://localhost:8787 。若修改了 `GITHUB_TOKEN` / `NVD_API_KEY` / `PORT` 等环境变量，需重启 API 进程。
 
+## Docker 部署
+
+```bash
+cp .env.example .env       # 可选：填写 GITHUB_TOKEN、NVD_API_KEY 等
+docker compose up -d --build
+```
+
+打开 http://127.0.0.1:8787 。SQLite 数据保存在命名卷 `opsite-data`（容器内 `/app/data`），重建容器不会丢失。
+
+镜像采用三阶段构建以控制体积：
+
+- `prod-deps`：仅安装生产依赖，并验证 `better-sqlite3` 的 musl 预编译二进制可用；
+- `build`：安装完整依赖，编译服务端 TypeScript 并构建前端；
+- `runtime`：基于 `node:22-alpine`，只包含生产 `node_modules`、编译后的服务端 JS、前端静态资源和 `package.json`，不包含源码、TypeScript、Vite 或构建工具。
+
+运行阶段以非 root 用户 `node` 启动，根文件系统只读（`read_only: true`），仅数据卷可写。默认只监听宿主机 `127.0.0.1`；需要局域网访问时，把 compose 中的 ports 改为 `"${OPSITE_PORT:-8787}:8787"`。可用 `OPSITE_PORT` 修改宿主机端口，通过 `.env` 传入的变量会被 compose 自动替换。
+
+```bash
+docker compose logs -f          # 查看日志
+docker compose down             # 停止，保留数据卷
+docker compose down -v          # 停止并删除数据卷（不可恢复）
+docker build --build-arg NODE_VERSION=22 -t opsite .
+```
+
+`.env`、`data/`、`node_modules/` 已通过 `.dockerignore` 排除，数据库和令牌不会进入镜像。
+
 ## 环境变量
 
 API 启动时会自动读取项目根目录的 `.env`（文件不存在则跳过），无需额外安装 dotenv。也可以直接通过进程环境变量传入，进程环境变量优先。

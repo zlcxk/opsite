@@ -27,7 +27,11 @@ app.use('/api', (_req, res) => {
   res.status(404).json({ error: '接口不存在' });
 });
 
-const clientDir = path.join(root, 'dist', 'client');
+// CLIENT_DIR lets container images or custom launchers place the static build
+// outside the default repo layout without changing the code.
+const clientDir = process.env.CLIENT_DIR
+  ? path.resolve(process.env.CLIENT_DIR)
+  : path.join(root, 'dist', 'client');
 if (fs.existsSync(clientDir)) {
   app.use(
     express.static(clientDir, {

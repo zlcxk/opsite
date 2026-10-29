@@ -1,0 +1,64 @@
+services:
+  opsite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: "22"
+    image: opsite:local
+    container_name: opsite
+    restart: unless-stopped
+    init: true
+
+    environment:
+      PORT: "8787"
+      # Must listen on all interfaces inside the container; host exposure is
+      # restricted to 127.0.0.1 in the ports section below.
+      HOST: 0.0.0.0
+      DATA_DIR: /app/data
+      CLIENT_DIR: /app/dist/client
+      DISABLE_SCHEDULER: ${DISABLE_SCHEDULER:-false}
+      SYNC_CRON: ${SYNC_CRON:-0 */6 * * *}
+      DISCOVERY_ENABLED: ${DISCOVERY_ENABLED:-true}
+      DISCOVERY_CRON: ${DISCOVERY_CRON:-0 9 * * *}
+      DISCOVERY_TIMEZONE: ${DISCOVERY_TIMEZONE:-Asia/Shanghai}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      NVD_API_KEY: ${NVD_API_KEY:-}
+
+    ports:
+      - "127.0.0.1:${OPSITE_PORT:-8787}:8787"
+
+    volumes:
+      - opsite-data:/app/data
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:' + (process.env.PORT || 8787) + '/api/health')
+          .then((res) => process.exit(res.ok ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    # The SQLite data volume is the only path that needs to be writable.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  opsite-data:
