@@ -218,6 +218,19 @@ CREATE TABLE IF NOT EXISTS radar_item (
   summary TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'tool',
   url TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_evaluated_at TEXT,
+  archived_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS radar_record (
+  id TEXT PRIMARY KEY,
+  radar_item_id TEXT NOT NULL REFERENCES radar_item(id) ON DELETE CASCADE,
+  record_type TEXT NOT NULL DEFAULT 'note',
+  content TEXT NOT NULL,
+  next_action TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -230,6 +243,27 @@ CREATE TABLE IF NOT EXISTS knowledge_note (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+`);
+
+// Forward-compatible migration for databases created by earlier releases.
+// Existing radar rows are preserved; new columns receive safe defaults.
+function ensureColumn(table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn('radar_item', 'status', "TEXT NOT NULL DEFAULT 'pending'");
+ensureColumn('radar_item', 'updated_at', 'TEXT');
+ensureColumn('radar_item', 'last_evaluated_at', 'TEXT');
+ensureColumn('radar_item', 'archived_at', 'TEXT');
+db.prepare("UPDATE radar_item SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''").run();
+
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_radar_archived ON radar_item(archived_at, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_radar_status ON radar_item(status);
+CREATE INDEX IF NOT EXISTS idx_radar_record_item ON radar_record(radar_item_id, created_at DESC);
 `);
 
 export function nowIso(): string {

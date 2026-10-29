@@ -1,7 +1,8 @@
-import type { DashboardBriefing, DashboardData, RadarItem } from '../../shared/types.js';
+import type { DashboardBriefing, DashboardData } from '../../shared/types.js';
 import { db, getSetting } from '../db.js';
 import { compareVersions } from '../lib/version.js';
 import { listEvents } from './events.js';
+import { listRadar } from './notes.js';
 import { listSoftware } from './software.js';
 import { getNextSyncAt, isSchedulerEnabled } from './scheduler.js';
 
@@ -62,20 +63,7 @@ export function getDashboard(): DashboardData {
   };
 
   const events = listEvents({ limit: 12 });
-  const radar = db
-    .prepare('SELECT * FROM radar_item ORDER BY created_at DESC LIMIT 6')
-    .all()
-    .map((row) => {
-      const item = row as { id: string; title: string; summary: string; kind: RadarItem['kind']; url: string | null; created_at: string };
-      return {
-        id: item.id,
-        title: item.title,
-        summary: item.summary,
-        kind: item.kind,
-        url: item.url,
-        createdAt: item.created_at,
-      };
-    });
+  const radarItems = listRadar();
 
   const lastSync = db
     .prepare('SELECT MAX(last_sync_at) AS value FROM software_source')
@@ -85,7 +73,8 @@ export function getDashboard(): DashboardData {
     briefing,
     events,
     software,
-    radar,
+    radar: radarItems.slice(0, 6),
+    radarCount: radarItems.length,
     lastSyncAt: lastSync?.value ?? null,
     schedulerEnabled: isSchedulerEnabled() && getSetting('sync_enabled', 'true') === 'true',
     nextSyncAt: getNextSyncAt(),

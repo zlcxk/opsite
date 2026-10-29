@@ -15,6 +15,7 @@ const pageNames: Array<[RegExp, string]> = [
   [/^\/vulnerabilities$/, '漏洞与修复'],
   [/^\/versions$/, '版本与生命周期'],
   [/^\/events$/, '情报事件'],
+  [/^\/radar\/[^/]+$/, '雷达条目'],
   [/^\/radar$/, '技术雷达'],
   [/^\/knowledge$/, '我的知识库'],
   [/^\/settings$/, '设置'],

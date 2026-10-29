@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import cron from 'node-cron';
 import { z } from 'zod';
-import type { LifecycleFeedItem, ReleaseFeedItem, SourceType } from '../shared/types.js';
+import type {
+  LifecycleFeedItem,
+  RadarKind,
+  RadarRecordType,
+  RadarStatus,
+  ReleaseFeedItem,
+  SourceType,
+} from '../shared/types.js';
 import { catalog, findCatalogItem } from './catalog.js';
 import { db, getSettingsObject, nowIso, setSetting } from './db.js';
 import { compareVersions, findCycle } from './lib/version.js';
@@ -18,10 +25,15 @@ import { getPublicSettings, updateSettings } from './services/settings.js';
 import {
   createNote,
   createRadar,
+  createRadarRecord,
   deleteNote,
   deleteRadar,
+  getRadarDetail,
   listNotes,
   listRadar,
+  listRadarRecords,
+  setRadarArchived,
+  setRadarStatus,
   updateNote,
   updateRadar,
 } from './services/notes.js';
@@ -99,11 +111,43 @@ const patchSoftwareSchema = z.object({
     .optional(),
 });
 
+const radarKinds = ['tool', 'tech', 'learning'] as const;
+const radarStatuses = ['pending', 'trialing', 'adopted', 'deferred', 'ignored'] as const;
+const radarRecordTypes = ['evaluation', 'trial', 'adoption', 'note'] as const;
+
+const radarUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((value) => value === '' || /^https?:\/\//i.test(value), {
+    message: '链接需以 http:// 或 https:// 开头',
+  })
+  .optional()
+  .nullable();
+
 const radarSchema = z.object({
   title: z.string().trim().min(1).max(160),
   summary: z.string().trim().max(1000).default(''),
-  kind: z.enum(['tool', 'tech', 'learning']),
-  url: z.string().trim().max(500).optional().nullable(),
+  kind: z.enum(radarKinds),
+  url: radarUrl,
+  status: z.enum(radarStatuses).optional(),
+});
+
+const radarPatchSchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  summary: z.string().trim().max(1000).optional(),
+  kind: z.enum(radarKinds).optional(),
+  url: radarUrl,
+});
+
+const radarStatusSchema = z.object({
+  status: z.enum(radarStatuses),
+});
+
+const radarRecordSchema = z.object({
+  recordType: z.enum(radarRecordTypes),
+  content: z.string().trim().min(1).max(5000),
+  nextAction: z.string().trim().max(1000).optional().nullable(),
 });
 
 const noteSchema = z.object({
@@ -478,8 +522,32 @@ router.get('/search', (req, res) => {
   res.json(searchAll(String(req.query.q ?? '')));
 });
 
-router.get('/radar', (_req, res) => {
-  res.json(listRadar());
+router.get('/radar', (req, res) => {
+  const kindRaw = String(req.query.kind ?? '');
+  const statusRaw = String(req.query.status ?? '');
+  const sortRaw = String(req.query.sort ?? '');
+  const limitRaw = Number(req.query.limit);
+  const kind = (radarKinds as readonly string[]).includes(kindRaw)
+    ? (kindRaw as RadarKind)
+    : undefined;
+  const status = (radarStatuses as readonly string[]).includes(statusRaw)
+    ? (statusRaw as RadarStatus)
+    : undefined;
+  const sort = ['created', 'updated', 'evaluated'].includes(sortRaw)
+    ? (sortRaw as 'created' | 'updated' | 'evaluated')
+    : 'updated';
+
+  res.json(
+    listRadar({
+      kind,
+      status,
+      q: req.query.q ? String(req.query.q) : undefined,
+      includeArchived: req.query.includeArchived === 'true',
+      archivedOnly: req.query.archived === 'true',
+      sort,
+      limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined,
+    }),
+  );
 });
 
 router.post('/radar', (req, res) => {
@@ -488,8 +556,17 @@ router.post('/radar', (req, res) => {
   res.status(201).json(createRadar(body));
 });
 
+router.get('/radar/:id', (req, res) => {
+  const detail = getRadarDetail(req.params.id);
+  if (!detail) {
+    res.status(404).json({ error: '雷达条目不存在' });
+    return;
+  }
+  res.json(detail);
+});
+
 router.patch('/radar/:id', (req, res) => {
-  const body = parseBody(radarSchema.partial(), req.body, res);
+  const body = parseBody(radarPatchSchema, req.body, res);
   if (!body) return;
   const item = updateRadar(req.params.id, body);
   if (!item) {
@@ -499,8 +576,64 @@ router.patch('/radar/:id', (req, res) => {
   res.json(item);
 });
 
+router.patch('/radar/:id/status', (req, res) => {
+  const body = parseBody(radarStatusSchema, req.body, res);
+  if (!body) return;
+  const item = setRadarStatus(req.params.id, body.status);
+  if (!item) {
+    res.status(404).json({ error: '雷达条目不存在' });
+    return;
+  }
+  res.json(item);
+});
+
+router.post('/radar/:id/archive', (req, res) => {
+  const item = setRadarArchived(req.params.id, true);
+  if (!item) {
+    res.status(404).json({ error: '雷达条目不存在' });
+    return;
+  }
+  res.json(item);
+});
+
+router.post('/radar/:id/restore', (req, res) => {
+  const item = setRadarArchived(req.params.id, false);
+  if (!item) {
+    res.status(404).json({ error: '雷达条目不存在' });
+    return;
+  }
+  res.json(item);
+});
+
+router.get('/radar/:id/records', (req, res) => {
+  const detail = getRadarDetail(req.params.id);
+  if (!detail) {
+    res.status(404).json({ error: '雷达条目不存在' });
+    return;
+  }
+  res.json(listRadarRecords(req.params.id));
+});
+
+router.post('/radar/:id/records', (req, res) => {
+  const body = parseBody(radarRecordSchema, req.body, res);
+  if (!body) return;
+  const record = createRadarRecord(req.params.id, {
+    recordType: body.recordType as RadarRecordType,
+    content: body.content,
+    nextAction: body.nextAction,
+  });
+  if (!record) {
+    res.status(404).json({ error: '雷达条目不存在' });
+    return;
+  }
+  res.status(201).json(record);
+});
+
 router.delete('/radar/:id', (req, res) => {
-  deleteRadar(req.params.id);
+  if (!deleteRadar(req.params.id)) {
+    res.status(404).json({ error: '雷达条目不存在' });
+    return;
+  }
   res.json({ ok: true });
 });
 

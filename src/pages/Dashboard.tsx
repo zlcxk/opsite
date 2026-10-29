@@ -469,7 +469,7 @@ export function Dashboard() {
           <section className="section rise" style={{ animationDelay: '160ms' }}>
             <SectionHeader
               title="技术雷达"
-              count={data?.radar.length}
+              count={data?.radarCount}
               subtitle="你自己挑选的新工具、技术更新与学习线索"
               action={
                 <Link to="/radar" className="text-link">

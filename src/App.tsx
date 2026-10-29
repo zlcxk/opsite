@@ -11,6 +11,7 @@ import { Vulnerabilities } from './pages/Vulnerabilities';
 import { Versions } from './pages/Versions';
 import { Events } from './pages/Events';
 import { Radar } from './pages/Radar';
+import { RadarDetail } from './pages/RadarDetail';
 import { Knowledge } from './pages/Knowledge';
 import { Settings } from './pages/Settings';
 import { useDocumentTitle } from './lib/hooks';
@@ -47,6 +48,7 @@ export default function App() {
               <Route path="versions" element={<Versions />} />
               <Route path="events" element={<Events />} />
               <Route path="radar" element={<Radar />} />
+              <Route path="radar/:id" element={<RadarDetail />} />
               <Route path="knowledge" element={<Knowledge />} />
               <Route path="settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />

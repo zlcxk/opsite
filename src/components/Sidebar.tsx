@@ -111,8 +111,8 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               >
                 <Icon size={16} strokeWidth={1.8} />
                 <span>{item.label}</span>
-                {item.to === '/radar' && (data?.radar.length ?? 0) > 0 && (
-                  <span className="nav-count">{data?.radar.length}</span>
+                {item.to === '/radar' && (data?.radarCount ?? 0) > 0 && (
+                  <span className="nav-count">{data?.radarCount}</span>
                 )}
               </NavLink>
             );

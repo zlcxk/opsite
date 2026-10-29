@@ -204,12 +204,24 @@ export interface DashboardData {
   events: IntelEvent[];
   software: SoftwareSummary[];
   radar: RadarItem[];
+  radarCount: number;
   lastSyncAt: string | null;
   schedulerEnabled: boolean;
   nextSyncAt: string | null;
 }
 
 export type RadarKind = 'tool' | 'tech' | 'learning';
+export type RadarStatus = 'pending' | 'trialing' | 'adopted' | 'deferred' | 'ignored';
+export type RadarRecordType = 'evaluation' | 'trial' | 'adoption' | 'note' | 'status_change';
+
+export interface RadarRecord {
+  id: string;
+  radarItemId: string;
+  recordType: RadarRecordType;
+  content: string;
+  nextAction: string | null;
+  createdAt: string;
+}
 
 export interface RadarItem {
   id: string;
@@ -217,7 +229,17 @@ export interface RadarItem {
   summary: string;
   kind: RadarKind;
   url: string | null;
+  status: RadarStatus;
   createdAt: string;
+  updatedAt: string;
+  lastEvaluatedAt: string | null;
+  archivedAt: string | null;
+  latestRecord: RadarRecord | null;
+}
+
+export interface RadarDetail {
+  item: RadarItem;
+  records: RadarRecord[];
 }
 
 export interface KnowledgeNote {

@@ -46,10 +46,12 @@ if (fs.existsSync(clientDir)) {
 }
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const message = error instanceof Error ? error.message : '服务内部错误';
+  // Keep internal exception and database details in the server log only.
   console.error('[api]', error);
   if (res.headersSent) return;
-  res.status(500).json({ error: message });
+  res.status(500).json({
+    error: '服务内部错误，请稍后重试；如果持续失败，请检查服务日志与 data/ 目录权限。',
+  });
 });
 
 const server = app.listen(port, host, () => {
