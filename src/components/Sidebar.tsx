@@ -3,6 +3,7 @@ import {
   Activity,
   Boxes,
   ChevronRight,
+  Compass,
   GitBranch,
   LayoutDashboard,
   NotebookPen,
@@ -29,6 +30,7 @@ const mainNav = [
 
 const exploreNav = [
   { to: '/radar', label: '技术雷达', icon: Radar },
+  { to: '/discover', label: '技术发现', icon: Compass },
   { to: '/knowledge', label: '我的知识库', icon: NotebookPen },
 ];
 

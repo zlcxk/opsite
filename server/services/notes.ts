@@ -283,8 +283,18 @@ export function createRadarRecord(
 }
 
 export function deleteRadar(id: string): boolean {
-  const result = db.prepare('DELETE FROM radar_item WHERE id = ?').run(id);
-  return result.changes > 0;
+  const run = db.transaction(() => {
+    // Keep discovery candidates consistent when their linked radar entry is
+    // deleted: return them to the pending pool instead of leaving a dangling
+    // "imported" state.
+    db.prepare(
+      `UPDATE discovery_candidate
+       SET status = 'pending', radar_item_id = NULL, updated_at = ?
+       WHERE radar_item_id = ?`,
+    ).run(nowIso(), id);
+    return db.prepare('DELETE FROM radar_item WHERE id = ?').run(id);
+  });
+  return run().changes > 0;
 }
 
 interface NoteRow {

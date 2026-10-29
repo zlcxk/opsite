@@ -46,7 +46,25 @@ import {
   updateSoftware,
 } from './services/software.js';
 import { listJobs, syncAllActive, syncSoftware } from './services/sync.js';
-import { getSchedulerState, rescheduleScheduler } from './services/scheduler.js';
+import {
+  getDiscoveryScheduleState,
+  getSchedulerState,
+  rescheduleScheduler,
+} from './services/scheduler.js';
+import {
+  DiscoveryRequestError,
+  findCandidateRadarMatch,
+  getDiscoveryCandidate,
+  getDiscoveryOverview,
+  ignoreDiscoveryCandidate,
+  importDiscoveryCandidate,
+  listDiscoveryCandidates,
+  listDiscoveryJobs,
+  listDiscoveryRules,
+  listDiscoverySources,
+  restoreDiscoveryCandidate,
+  startDiscoveryRun,
+} from './services/discovery.js';
 
 const router = Router();
 
@@ -150,6 +168,24 @@ const radarRecordSchema = z.object({
   nextAction: z.string().trim().max(1000).optional().nullable(),
 });
 
+const discoveryListSchema = z.object({
+  status: z.enum(['all', 'pending', 'imported', 'ignored']).optional(),
+  source: z.enum(['github', 'cncf']).optional(),
+  category: z.string().trim().max(120).optional(),
+  q: z.string().trim().max(120).optional(),
+  sort: z.enum(['discovered', 'updated', 'stars', 'title']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+const discoveryImportSchema = z.object({
+  radarItemId: z.string().trim().min(1).max(100).optional().nullable(),
+  title: z.string().trim().min(1).max(160).optional(),
+  summary: z.string().trim().max(1000).optional(),
+  kind: z.enum(radarKinds).optional(),
+  url: radarUrl,
+});
+
 const noteSchema = z.object({
   title: z.string().trim().min(1).max(160),
   content: z.string().max(200_000).optional(),
@@ -180,6 +216,17 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: any): T | null {
     return null;
   }
   return parsed.data;
+}
+
+function sendDiscoveryError(res: any, error: unknown): boolean {
+  if (error instanceof DiscoveryRequestError) {
+    res.status(error.status).json({
+      error: error.message,
+      ...(error.details ? { details: error.details } : {}),
+    });
+    return true;
+  }
+  return false;
 }
 
 router.get('/health', (_req, res) => {
@@ -635,6 +682,98 @@ router.delete('/radar/:id', (req, res) => {
     return;
   }
   res.json({ ok: true });
+});
+
+router.get('/discovery/candidates', (req, res) => {
+  const parsed = discoveryListSchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: '筛选参数不合法' });
+    return;
+  }
+  res.json(
+    listDiscoveryCandidates({
+      status: parsed.data.status,
+      sourceType: parsed.data.source,
+      category: parsed.data.category,
+      q: parsed.data.q,
+      sort: parsed.data.sort,
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
+    }),
+  );
+});
+
+router.get('/discovery/candidates/:id', (req, res) => {
+  const candidate = getDiscoveryCandidate(req.params.id);
+  if (!candidate) {
+    res.status(404).json({ error: '候选技术不存在' });
+    return;
+  }
+  res.json(candidate);
+});
+
+router.get('/discovery/candidates/:id/radar-match', (req, res) => {
+  try {
+    res.json({ radarItem: findCandidateRadarMatch(req.params.id) });
+  } catch (error) {
+    if (sendDiscoveryError(res, error)) return;
+    throw error;
+  }
+});
+
+router.post('/discovery/candidates/:id/import', (req, res) => {
+  const body = parseBody(discoveryImportSchema, req.body ?? {}, res);
+  if (!body) return;
+  try {
+    res.status(201).json(importDiscoveryCandidate(req.params.id, body));
+  } catch (error) {
+    if (sendDiscoveryError(res, error)) return;
+    throw error;
+  }
+});
+
+router.post('/discovery/candidates/:id/ignore', (req, res) => {
+  try {
+    res.json(ignoreDiscoveryCandidate(req.params.id));
+  } catch (error) {
+    if (sendDiscoveryError(res, error)) return;
+    throw error;
+  }
+});
+
+router.post('/discovery/candidates/:id/restore', (req, res) => {
+  try {
+    res.json(restoreDiscoveryCandidate(req.params.id));
+  } catch (error) {
+    if (sendDiscoveryError(res, error)) return;
+    throw error;
+  }
+});
+
+router.get('/discovery/overview', (_req, res) => {
+  res.json(getDiscoveryOverview(getDiscoveryScheduleState()));
+});
+
+router.get('/discovery/sources', (_req, res) => {
+  res.json(listDiscoverySources());
+});
+
+router.get('/discovery/rules', (_req, res) => {
+  res.json(listDiscoveryRules());
+});
+
+router.get('/discovery/jobs', (req, res) => {
+  const limit = Number(req.query.limit);
+  res.json(listDiscoveryJobs(Number.isFinite(limit) && limit > 0 ? limit : 12));
+});
+
+router.post('/discovery/refresh', (_req, res) => {
+  const result = startDiscoveryRun('manual');
+  if (!result.started) {
+    res.status(409).json({ error: result.reason ?? '采集正在进行中' });
+    return;
+  }
+  res.status(202).json({ ok: true, started: true });
 });
 
 router.get('/knowledge', (_req, res) => {

@@ -45,8 +45,11 @@ API 启动时会自动读取项目根目录的 `.env`（文件不存在则跳过
 | `HOST` | 否 | 监听地址，默认 `127.0.0.1`；局域网访问设为 `0.0.0.0` |
 | `GITHUB_TOKEN` | 否 | 提高 GitHub Releases / Advisory 速率上限 |
 | `NVD_API_KEY` | 否 | 将 NVD 请求间隔从约 6.3 秒缩短到约 0.7 秒 |
-| `DISABLE_SCHEDULER` | 否 | `true` 时关闭内置定时采集，手动同步仍可用 |
+| `DISABLE_SCHEDULER` | 否 | `true` 时关闭全部内置定时任务，手动同步与手动采集仍可用 |
 | `SYNC_CRON` | 否 | 初始采集周期，默认 `0 */6 * * *`；也可在设置页修改 |
+| `DISCOVERY_ENABLED` | 否 | `false` 时仅关闭每日技术发现，不影响软件同步；默认启用 |
+| `DISCOVERY_CRON` | 否 | 技术发现周期，默认 `0 9 * * *` |
+| `DISCOVERY_TIMEZONE` | 否 | 技术发现时区，默认 `Asia/Shanghai` |
 
 凭据只从服务端环境变量读取。设置页仅显示“已配置 / 未配置”，不会返回密钥内容。
 
@@ -80,6 +83,28 @@ API 启动时会自动读取项目根目录的 `.env`（文件不存在则跳过
 - 编辑在原条目上完成；归档保留状态与全部记录；永久删除会级联删除该条目的评估记录，并在确认框中明确提示。
 - 内置软件目录补充了 RocketMQ、Flannel、Calico、Java、Tomcat、OpenSSH、Nacos、Dubbo、NFS 和 Docker Compose。
 
+## 技术发现
+
+“技术发现”是与技术雷达独立的候选池：系统从可信来源发现候选技术，由用户决定是否加入雷达。
+
+- **GitHub**：使用官方 Search API（`/search/repositories`）按少量可检查的规则查询，默认 6 条规则（Kubernetes、可观测性、DevOps、SRE、IaC、Service Mesh）。规则只覆盖明确写出的查询条件，不代表整个 GitHub。结果按最近更新排序，跳过归档仓库和 fork。
+- **CNCF**：读取 CNCF 官方 Landscape 仓库的 `landscape.yml`（经 GitHub Contents API，`Accept: application/vnd.github.raw+json`），按 `project` 字段筛选 graduated / incubating 项目。未提供星标、语言、许可证等字段时保持“未知”，不填 0。
+- 默认每天 09:00（`Asia/Shanghai`）自动采集一次，也可在页面点击“立即采集”。同一时间只允许一个采集任务运行；单条规则失败不会中断其他规则，单个来源失败不会清空已有候选。
+- 候选按来源稳定 ID 去重；不同来源指向同一规范化项目 URL 时合并为一条候选，并保留多条来源引用。
+- 候选状态为 `待评估 / 已收录 / 已忽略`。自动采集只更新外部来源字段，不会覆盖用户状态、备注、首次发现时间或已关联的雷达条目。
+- 加入雷达前会按规范化 URL 检查雷达中是否已有同一项目；发现重复时只提供“关联已有条目”，不会自动创建重复记录。删除雷达条目后，关联候选会回到“待评估”。
+
+采集结果只写入 `discovery_*` 表，不会克隆、安装、运行或部署任何被发现的仓库。
+
+### 来源与限制
+
+| 来源 | 接口 | 限制 |
+| --- | --- | --- |
+| GitHub | `api.github.com/search/repositories` | 未配置 `GITHUB_TOKEN` 时匿名搜索约 10 次/分钟，规则较多时可能返回 403，本次运行标记为“部分成功” |
+| CNCF | `api.github.com/repos/cncf/landscape/contents/landscape.yml` | 通过 GitHub Contents API 读取官方文件；同样受 GitHub 速率限制影响 |
+
+`GITHUB_TOKEN` 只由服务端读取，不返回前端、不写入日志。页面展示的规则查询串即实际采集范围，不声称覆盖全部 GitHub。
+
 ## 备份与恢复
 
 设置页“数据与备份”可以下载 SQLite 快照（`VACUUM INTO`，生成的副本位于 `data/backups/`）。
@@ -98,7 +123,7 @@ npm start
 ## 测试
 
 ```bash
-npm test          # 版本比较、范围匹配、影响判断、优先级、EOL 判定、雷达迁移与状态/记录
+npm test          # 版本比较、范围匹配、影响判断、优先级、EOL 判定、雷达迁移与记录、技术发现采集/去重/收录
 npm run build     # TypeScript 类型检查 + 前端生产构建
 ```
 

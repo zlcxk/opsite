@@ -1916,6 +1916,14 @@ a {
   animation: pop-in 130ms ease-out;
 }
 
+.menu-portal {
+  position: fixed;
+  right: auto;
+  z-index: 70;
+  max-height: min(70vh, 360px);
+  overflow-y: auto;
+}
+
 .menu button,
 .menu a {
   display: flex;
@@ -3881,5 +3889,459 @@ a {
 @media (max-width: 1100px) {
   .sidebar-close {
     display: grid;
+  }
+}
+
+/* ---------- Discovery ---------- */
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+.live-dot.busy {
+  background: var(--signal);
+  color: var(--signal);
+  box-shadow: 0 0 0 3px rgba(233, 101, 56, 0.12);
+}
+
+.discovery-runbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background:
+    linear-gradient(110deg, rgba(52, 113, 92, 0.045), transparent 45%),
+    rgba(255, 255, 255, 0.62);
+  padding: 11px 14px;
+}
+
+.discovery-runbar-main {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.discovery-runbar-main .live-dot {
+  margin-top: 4px;
+  flex: none;
+}
+
+.discovery-runbar-main strong {
+  display: block;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 560;
+}
+
+.discovery-runbar-main span:not(.live-dot) {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.discovery-source-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.discovery-source-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.66);
+  padding: 3px 7px;
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.discovery-source-status.error {
+  border-color: rgba(205, 61, 49, 0.18);
+}
+
+.discovery-source-status.partial {
+  border-color: rgba(166, 111, 36, 0.2);
+}
+
+.discovery-rules {
+  margin-top: 9px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.discovery-rules summary {
+  display: flex;
+  cursor: pointer;
+  list-style: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 13px;
+  color: var(--ink-2);
+  font-size: 9.5px;
+}
+
+.discovery-rules summary::-webkit-details-marker {
+  display: none;
+}
+
+.discovery-rules-meta {
+  color: var(--muted-2);
+  font-family: var(--font-mono);
+  font-size: 8px;
+}
+
+.discovery-rules-body {
+  border-top: 1px solid var(--line);
+  padding: 12px 13px;
+}
+
+.discovery-rules-body > p {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.7;
+}
+
+.discovery-rule-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.discovery-rule {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 9px 10px;
+}
+
+.discovery-rule.disabled {
+  opacity: 0.55;
+}
+
+.discovery-rule-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.discovery-rule-head strong {
+  color: var(--ink-2);
+  font-size: 9.5px;
+  font-weight: 560;
+}
+
+.discovery-rule code {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
+
+.discovery-rule-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 8px;
+  margin-top: 5px;
+  color: var(--muted-2);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.discovery-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
+}
+
+.discovery-job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.discovery-job-error {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--critical);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovery-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.discovery-card {
+  min-height: 190px;
+}
+
+.discovery-card.ignored {
+  border-style: dashed;
+  background: #fbfcf9;
+}
+
+.discovery-category {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.discovery-source-ref {
+  max-width: 42%;
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovery-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 9px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+}
+
+.discovery-metrics span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.discovery-linked {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+  color: var(--signal-deep);
+  font-size: 8.5px;
+}
+
+.discovery-linked a {
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovery-linked span {
+  flex: none;
+  color: var(--muted-2);
+}
+
+.discovery-card footer {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.discovery-card footer .btn,
+.discovery-card footer .radar-quick {
+  height: 23px;
+  font-family: var(--font-sans);
+  font-size: 8.5px;
+}
+
+.discovery-card footer .radar-quick {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.discovery-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--muted-2);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+}
+
+.discovery-pager > div {
+  display: flex;
+  gap: 6px;
+}
+
+.discovery-source-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.discovery-source-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 1px dashed #edf0ea;
+  padding: 11px 0;
+}
+
+.discovery-source-row:first-child {
+  padding-top: 0;
+}
+
+.discovery-source-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.discovery-source-row .radar-kind {
+  flex: none;
+}
+
+.discovery-source-row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.discovery-source-row-main strong {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovery-source-row-main span {
+  color: var(--muted);
+  font-size: 8.5px;
+  line-height: 1.55;
+}
+
+.discovery-source-row > .text-link {
+  flex: none;
+  white-space: nowrap;
+}
+
+.discovery-decision {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.discovery-decision strong {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 560;
+  letter-spacing: -0.015em;
+}
+
+.discovery-decision p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+.discovery-match-check {
+  padding: 20px;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.discovery-match {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(52, 113, 92, 0.045);
+  padding: 14px;
+}
+
+.discovery-match-mark {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--white);
+  color: var(--signal-deep);
+}
+
+.discovery-match strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 560;
+}
+
+.discovery-match p {
+  margin: 5px 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+@media (max-width: 1180px) {
+  .discovery-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .discovery-rule-list {
+    grid-template-columns: 1fr;
+  }
+  .discovery-runbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 620px) {
+  .discovery-grid {
+    grid-template-columns: 1fr;
+  }
+  .discovery-pager {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .discovery-card footer .btn {
+    flex: 0 0 auto;
   }
 }

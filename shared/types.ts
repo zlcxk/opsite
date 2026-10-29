@@ -242,6 +242,143 @@ export interface RadarDetail {
   records: RadarRecord[];
 }
 
+export type DiscoverySourceType = 'github' | 'cncf';
+export type DiscoveryStatus = 'pending' | 'imported' | 'ignored';
+export type DiscoverySourceStatus = 'never' | 'ok' | 'partial' | 'error';
+export type DiscoveryJobStatus = 'running' | 'success' | 'partial' | 'error';
+
+export interface DiscoveryCandidateSource {
+  sourceType: DiscoverySourceType;
+  sourceItemId: string;
+  sourceRef: string | null;
+  sourceUrl: string | null;
+  sourceUpdatedAt: string | null;
+  lastSeenAt: string;
+}
+
+export interface DiscoveryRadarLink {
+  id: string;
+  title: string;
+  status: RadarStatus;
+  archivedAt: string | null;
+}
+
+export interface DiscoveryCandidate {
+  id: string;
+  sourceType: DiscoverySourceType;
+  sourceItemId: string;
+  sourceRef: string | null;
+  title: string;
+  description: string | null;
+  category: string;
+  status: DiscoveryStatus;
+  canonicalUrl: string;
+  homepageUrl: string | null;
+  sourceUrl: string | null;
+  sourceCreatedAt: string | null;
+  sourceUpdatedAt: string | null;
+  sourcePushedAt: string | null;
+  starsCount: number | null;
+  forksCount: number | null;
+  language: string | null;
+  license: string | null;
+  firstDiscoveredAt: string;
+  lastSeenAt: string;
+  lastFetchedAt: string;
+  radarItemId: string | null;
+  relatedRadarItem: DiscoveryRadarLink | null;
+  sources: DiscoveryCandidateSource[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DiscoverySource {
+  id: string;
+  type: DiscoverySourceType;
+  name: string;
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastErrorAt: string | null;
+  lastErrorSummary: string | null;
+  lastStatus: DiscoverySourceStatus;
+  lastResult: string | null;
+}
+
+export interface DiscoveryRule {
+  id: string;
+  sourceId: string;
+  sourceType: DiscoverySourceType;
+  name: string;
+  query: string;
+  category: string;
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastResult: string | null;
+  lastError: string | null;
+}
+
+export interface DiscoveryJob {
+  id: string;
+  sourceType: DiscoverySourceType;
+  trigger: 'manual' | 'schedule';
+  status: DiscoveryJobStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  itemsFound: number;
+  itemsNew: number;
+  itemsUpdated: number;
+  itemsDuplicate: number;
+  errorSummary: string | null;
+}
+
+export interface DiscoveryCounts {
+  all: number;
+  pending: number;
+  imported: number;
+  ignored: number;
+}
+
+export interface DiscoverySourceSummary {
+  type: DiscoverySourceType;
+  name: string;
+  pendingCount: number;
+  totalCount: number;
+}
+
+export interface DiscoveryListResponse {
+  items: DiscoveryCandidate[];
+  total: number;
+  limit: number;
+  offset: number;
+  counts: DiscoveryCounts;
+  sources: DiscoverySourceSummary[];
+  categories: string[];
+}
+
+export interface DiscoveryOverview {
+  counts: DiscoveryCounts;
+  sources: DiscoverySource[];
+  rules: DiscoveryRule[];
+  jobs: DiscoveryJob[];
+  running: boolean;
+  runningSince: string | null;
+  lastRunAt: string | null;
+  githubTokenConfigured: boolean;
+  scheduler: {
+    enabled: boolean;
+    nextRunAt: string | null;
+    timezone: string;
+    cron: string;
+  };
+}
+
+export interface DiscoveryImportResult {
+  candidate: DiscoveryCandidate;
+  radarItem: RadarItem;
+  created: boolean;
+}
+
 export interface KnowledgeNote {
   id: string;
   title: string;

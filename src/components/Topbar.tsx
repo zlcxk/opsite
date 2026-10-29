@@ -17,6 +17,8 @@ const pageNames: Array<[RegExp, string]> = [
   [/^\/events$/, '情报事件'],
   [/^\/radar\/[^/]+$/, '雷达条目'],
   [/^\/radar$/, '技术雷达'],
+  [/^\/discover\/[^/]+$/, '候选详情'],
+  [/^\/discover$/, '技术发现'],
   [/^\/knowledge$/, '我的知识库'],
   [/^\/settings$/, '设置'],
   [/^\/$/, '首页'],

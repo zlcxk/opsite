@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_DISCOVERY_RULES, DEFAULT_DISCOVERY_SOURCES } from './services/discovery-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -243,6 +244,97 @@ CREATE TABLE IF NOT EXISTS knowledge_note (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS discovery_source (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  last_success_at TEXT,
+  last_error_at TEXT,
+  last_error_summary TEXT,
+  last_status TEXT NOT NULL DEFAULT 'never',
+  last_result TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS discovery_rule (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES discovery_source(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  query TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '其他',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  last_result TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(source_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_rule_source ON discovery_rule(source_id, enabled);
+
+CREATE TABLE IF NOT EXISTS discovery_candidate (
+  id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_item_id TEXT NOT NULL,
+  source_ref TEXT,
+  title TEXT NOT NULL,
+  description TEXT,
+  category TEXT NOT NULL DEFAULT '其他',
+  status TEXT NOT NULL DEFAULT 'pending',
+  canonical_url TEXT NOT NULL,
+  homepage_url TEXT,
+  source_url TEXT,
+  source_created_at TEXT,
+  source_updated_at TEXT,
+  source_pushed_at TEXT,
+  stars_count INTEGER,
+  forks_count INTEGER,
+  language TEXT,
+  license TEXT,
+  first_discovered_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  last_fetched_at TEXT NOT NULL,
+  radar_item_id TEXT REFERENCES radar_item(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(source_type, source_item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_status ON discovery_candidate(status, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discovery_category ON discovery_candidate(category);
+CREATE INDEX IF NOT EXISTS idx_discovery_canonical ON discovery_candidate(canonical_url);
+CREATE INDEX IF NOT EXISTS idx_discovery_radar ON discovery_candidate(radar_item_id);
+
+CREATE TABLE IF NOT EXISTS discovery_candidate_source (
+  candidate_id TEXT NOT NULL REFERENCES discovery_candidate(id) ON DELETE CASCADE,
+  source_type TEXT NOT NULL,
+  source_item_id TEXT NOT NULL,
+  source_ref TEXT,
+  source_url TEXT,
+  source_updated_at TEXT,
+  last_seen_at TEXT NOT NULL,
+  PRIMARY KEY (source_type, source_item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_candidate_source ON discovery_candidate_source(candidate_id);
+
+CREATE TABLE IF NOT EXISTS discovery_job (
+  id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  trigger TEXT NOT NULL DEFAULT 'manual',
+  status TEXT NOT NULL DEFAULT 'running',
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  items_found INTEGER NOT NULL DEFAULT 0,
+  items_new INTEGER NOT NULL DEFAULT 0,
+  items_updated INTEGER NOT NULL DEFAULT 0,
+  items_duplicate INTEGER NOT NULL DEFAULT 0,
+  error_summary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_job_started ON discovery_job(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discovery_job_source ON discovery_job(source_type, started_at DESC);
 `);
 
 // Forward-compatible migration for databases created by earlier releases.
@@ -265,6 +357,31 @@ CREATE INDEX IF NOT EXISTS idx_radar_archived ON radar_item(archived_at, updated
 CREATE INDEX IF NOT EXISTS idx_radar_status ON radar_item(status);
 CREATE INDEX IF NOT EXISTS idx_radar_record_item ON radar_record(radar_item_id, created_at DESC);
 `);
+
+const seedTimestamp = new Date().toISOString();
+for (const source of DEFAULT_DISCOVERY_SOURCES) {
+  db.prepare(
+    `INSERT INTO discovery_source (id, type, name, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  ).run(source.id, source.type, source.name, source.enabled ? 1 : 0, seedTimestamp, seedTimestamp);
+}
+for (const rule of DEFAULT_DISCOVERY_RULES) {
+  db.prepare(
+    `INSERT INTO discovery_rule (id, source_id, name, query, category, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  ).run(
+    rule.id,
+    rule.sourceId,
+    rule.name,
+    rule.query,
+    rule.category,
+    rule.enabled ? 1 : 0,
+    seedTimestamp,
+    seedTimestamp,
+  );
+}
 
 export function nowIso(): string {
   return new Date().toISOString();
