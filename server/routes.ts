@@ -109,6 +109,38 @@ import {
   sanitizeSmtpError,
 } from './services/smtp.js';
 import {
+  applyTemplate,
+  createDomain,
+  createNode,
+  createRelation,
+  createView,
+  deleteDomain,
+  deleteNode,
+  deleteRelation,
+  deleteView,
+  getDomainDetail,
+  getDomainTree,
+  getNode,
+  getNodeDetail,
+  getTechOverview,
+  getViewDetail,
+  linkDiscovery,
+  linkRadar,
+  linkSoftware,
+  listDomainSummaries,
+  listNodes,
+  listRelations,
+  listTemplates,
+  listViewSummaries,
+  moveNode,
+  setNodeArchived,
+  TechRequestError,
+  updateDomain,
+  updateNode,
+  updateNodeCognition,
+  updateView,
+} from './services/tech.js';
+import {
   DiscoveryRequestError,
   findCandidateRadarMatch,
   getDiscoveryCandidate,
@@ -248,6 +280,154 @@ const noteSchema = z.object({
   content: z.string().max(200_000).optional(),
   tags: z.array(z.string().trim().max(40)).max(12).optional(),
   relatedSoftwareId: z.string().optional().nullable(),
+  techNodeId: z.string().optional().nullable(),
+});
+
+const techUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((value) => value === '' || /^https?:\/\//i.test(value), {
+    message: '链接需以 http:// 或 https:// 开头',
+  })
+  .optional()
+  .nullable();
+
+const techLinkSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  url: z
+    .string()
+    .trim()
+    .max(500)
+    .refine((value) => /^https?:\/\//i.test(value), { message: '链接需以 http:// 或 https:// 开头' }),
+});
+
+const techNodeTypes = [
+  'domain',
+  'concept',
+  'component',
+  'resource',
+  'protocol',
+  'practice',
+  'direction',
+] as const;
+const techMasteryStatuses = [
+  'unknown',
+  'to_learn',
+  'learning',
+  'understood',
+  'mastered',
+  'deep_dive',
+] as const;
+const techFocusLevels = ['normal', 'focus'] as const;
+const techRelationTypes = [
+  'contains',
+  'depends_on',
+  'based_on',
+  'extends',
+  'alternative',
+  'implements',
+  'related',
+] as const;
+const techViewTypes = ['architecture', 'workflow', 'relation', 'deployment'] as const;
+
+const techNodeSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  nodeType: z.enum(techNodeTypes),
+  parentId: z.string().trim().max(100).optional().nullable(),
+  summary: z.string().trim().max(500).optional().nullable(),
+  description: z.string().max(20_000).optional().nullable(),
+  technicalRole: z.string().max(2_000).optional().nullable(),
+  corePrinciple: z.string().max(10_000).optional().nullable(),
+  solvedProblem: z.string().max(5_000).optional().nullable(),
+  keyMechanism: z.string().max(10_000).optional().nullable(),
+  useCases: z.string().max(10_000).optional().nullable(),
+  commonIssues: z.string().max(10_000).optional().nullable(),
+  docsUrl: techUrl,
+  repoUrl: techUrl,
+  referenceLinks: z.array(techLinkSchema).max(20).optional(),
+  personalNotes: z.string().max(20_000).optional().nullable(),
+  researchQuestions: z.string().max(10_000).optional().nullable(),
+  masteryStatus: z.enum(techMasteryStatuses).optional(),
+  focusLevel: z.enum(techFocusLevels).optional(),
+});
+
+const techNodePatchSchema = techNodeSchema.partial();
+
+const techDomainSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().max(2_000).optional().nullable(),
+  icon: z.string().trim().max(60).optional().nullable(),
+  cover: techUrl,
+  focusLevel: z.enum(techFocusLevels).optional(),
+});
+
+const techDomainPatchSchema = techDomainSchema.partial().extend({
+  status: z.enum(['active', 'archived']).optional(),
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+});
+
+const techCognitionSchema = z
+  .object({
+    masteryStatus: z.enum(techMasteryStatuses).optional(),
+    focusLevel: z.enum(techFocusLevels).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: '至少提供一个认知字段' });
+
+const techMoveSchema = z.object({
+  parentId: z.string().trim().max(100).nullable(),
+  beforeId: z.string().trim().max(100).optional().nullable(),
+});
+
+const techArchiveSchema = z.object({ archived: z.boolean() });
+
+const techRelationSchema = z.object({
+  sourceNodeId: z.string().trim().min(1).max(100),
+  targetNodeId: z.string().trim().min(1).max(100),
+  relationType: z.enum(techRelationTypes),
+  description: z.string().trim().max(500).optional().nullable(),
+});
+
+const techGraphSchema = z.object({
+  nodes: z.array(z.unknown()).max(300),
+  edges: z.array(z.unknown()).max(600),
+});
+
+const techViewSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2_000).optional().nullable(),
+  viewType: z.enum(techViewTypes),
+  graphData: techGraphSchema.optional(),
+});
+
+const techViewPatchSchema = techViewSchema.partial().extend({
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+});
+
+const techSoftwareLinkSchema = z.object({
+  softwareId: z.string().trim().min(1).max(100),
+  linked: z.boolean(),
+});
+
+const techRadarLinkSchema = z.object({
+  radarItemId: z.string().trim().min(1).max(100),
+  linked: z.boolean(),
+});
+
+const techDiscoveryLinkSchema = z.object({
+  candidateId: z.string().trim().min(1).max(100),
+  linked: z.boolean(),
+});
+
+const techNodeListSchema = z.object({
+  domainId: z.string().trim().max(100).optional(),
+  q: z.string().trim().max(120).optional(),
+  nodeType: z.enum(techNodeTypes).optional(),
+  mastery: z.enum(techMasteryStatuses).optional(),
+  focus: z.enum(['true', 'false']).optional(),
+  status: z.enum(['active', 'archived', 'all']).optional(),
+  limit: z.coerce.number().int().min(1).max(300).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
 });
 
 const settingsSchema = z.object({
@@ -389,6 +569,14 @@ function sendDiscoveryError(res: any, error: unknown): boolean {
       error: error.message,
       ...(error.details ? { details: error.details } : {}),
     });
+    return true;
+  }
+  return false;
+}
+
+function sendTechError(res: any, error: unknown): boolean {
+  if (error instanceof TechRequestError) {
+    res.status(error.status).json({ error: error.message });
     return true;
   }
   return false;
@@ -941,19 +1129,31 @@ router.post('/discovery/refresh', (_req, res) => {
   res.status(202).json({ ok: true, started: true });
 });
 
-router.get('/knowledge', (_req, res) => {
-  res.json(listNotes());
+router.get('/knowledge', (req, res) => {
+  const techNodeId =
+    typeof req.query.techNodeId === 'string' && req.query.techNodeId.trim()
+      ? req.query.techNodeId.trim()
+      : undefined;
+  res.json(listNotes({ techNodeId }));
 });
 
 router.post('/knowledge', (req, res) => {
   const body = parseBody(noteSchema, req.body, res);
   if (!body) return;
+  if (body.techNodeId && !getNode(body.techNodeId)) {
+    res.status(400).json({ error: '关联的技术节点不存在' });
+    return;
+  }
   res.status(201).json(createNote(body));
 });
 
 router.patch('/knowledge/:id', (req, res) => {
   const body = parseBody(noteSchema.partial(), req.body, res);
   if (!body) return;
+  if (body.techNodeId && !getNode(body.techNodeId)) {
+    res.status(400).json({ error: '关联的技术节点不存在' });
+    return;
+  }
   const note = updateNote(req.params.id, body);
   if (!note) {
     res.status(404).json({ error: '笔记不存在' });
@@ -965,6 +1165,265 @@ router.patch('/knowledge/:id', (req, res) => {
 router.delete('/knowledge/:id', (req, res) => {
   deleteNote(req.params.id);
   res.json({ ok: true });
+});
+
+/* ------------------------------ Technology Map ----------------------------- */
+
+router.get('/tech/overview', (_req, res) => {
+  res.json(getTechOverview());
+});
+
+router.get('/tech/domains', (_req, res) => {
+  res.json(listDomainSummaries());
+});
+
+router.post('/tech/domains', (req, res) => {
+  const body = parseBody(techDomainSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.status(201).json(createDomain(body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.get('/tech/domains/:id', (req, res) => {
+  try {
+    const detail = getDomainDetail(req.params.id);
+    if (!detail) {
+      res.status(404).json({ error: '技术领域不存在' });
+      return;
+    }
+    res.json(detail);
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.patch('/tech/domains/:id', (req, res) => {
+  const body = parseBody(techDomainPatchSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(updateDomain(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.delete('/tech/domains/:id', (req, res) => {
+  try {
+    deleteDomain(req.params.id);
+    res.json({ ok: true });
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.get('/tech/domains/:id/tree', (req, res) => {
+  try {
+    res.json(getDomainTree(req.params.id));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.get('/tech/domains/:id/views', (req, res) => {
+  try {
+    if (!getDomainDetail(req.params.id)) {
+      res.status(404).json({ error: '技术领域不存在' });
+      return;
+    }
+    res.json(listViewSummaries(req.params.id));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/domains/:id/nodes', (req, res) => {
+  const body = parseBody(techNodeSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.status(201).json(createNode(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/domains/:id/views', (req, res) => {
+  const body = parseBody(techViewSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.status(201).json(createView(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.get('/tech/nodes', (req, res) => {
+  const parsed = techNodeListSchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: '查询参数不合法' });
+    return;
+  }
+  const { focus, ...rest } = parsed.data;
+  res.json(listNodes({ ...rest, focus: focus === 'true' }));
+});
+
+router.get('/tech/nodes/:id', (req, res) => {
+  try {
+    const detail = getNodeDetail(req.params.id);
+    if (!detail) {
+      res.status(404).json({ error: '技术节点不存在' });
+      return;
+    }
+    res.json(detail);
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.patch('/tech/nodes/:id', (req, res) => {
+  const body = parseBody(techNodePatchSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(updateNode(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.delete('/tech/nodes/:id', (req, res) => {
+  const raw = typeof req.query.strategy === 'string' ? req.query.strategy : '';
+  if (raw && raw !== 'subtree' && raw !== 'promote') {
+    res.status(400).json({ error: '删除策略不合法' });
+    return;
+  }
+  const strategy = raw === 'subtree' || raw === 'promote' ? raw : undefined;
+  try {
+    res.json(deleteNode(req.params.id, strategy));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/nodes/:id/move', (req, res) => {
+  const body = parseBody(techMoveSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(moveNode(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/nodes/:id/archive', (req, res) => {
+  const body = parseBody(techArchiveSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(setNodeArchived(req.params.id, body.archived));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.patch('/tech/nodes/:id/cognition', (req, res) => {
+  const body = parseBody(techCognitionSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(updateNodeCognition(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/nodes/:id/software', (req, res) => {
+  const body = parseBody(techSoftwareLinkSchema, req.body, res);
+  if (!body) return;
+  try {
+    linkSoftware(req.params.id, body.softwareId, body.linked);
+    res.json(getNodeDetail(req.params.id));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/nodes/:id/radar', (req, res) => {
+  const body = parseBody(techRadarLinkSchema, req.body, res);
+  if (!body) return;
+  try {
+    linkRadar(req.params.id, body.radarItemId, body.linked);
+    res.json(getNodeDetail(req.params.id));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/nodes/:id/discovery', (req, res) => {
+  const body = parseBody(techDiscoveryLinkSchema, req.body, res);
+  if (!body) return;
+  try {
+    linkDiscovery(req.params.id, body.candidateId, body.linked);
+    res.json(getNodeDetail(req.params.id));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.get('/tech/relations', (req, res) => {
+  const domainId = typeof req.query.domainId === 'string' ? req.query.domainId : undefined;
+  const nodeId = typeof req.query.nodeId === 'string' ? req.query.nodeId : undefined;
+  res.json(listRelations({ domainId, nodeId }));
+});
+
+router.post('/tech/relations', (req, res) => {
+  const body = parseBody(techRelationSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.status(201).json(createRelation(body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.delete('/tech/relations/:id', (req, res) => {
+  deleteRelation(req.params.id);
+  res.json({ ok: true });
+});
+
+router.get('/tech/views/:id', (req, res) => {
+  const detail = getViewDetail(req.params.id);
+  if (!detail) {
+    res.status(404).json({ error: '架构视图不存在' });
+    return;
+  }
+  res.json(detail);
+});
+
+router.patch('/tech/views/:id', (req, res) => {
+  const body = parseBody(techViewPatchSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(updateView(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.delete('/tech/views/:id', (req, res) => {
+  deleteView(req.params.id);
+  res.json({ ok: true });
+});
+
+router.get('/tech/templates', (_req, res) => {
+  res.json(listTemplates());
+});
+
+router.post('/tech/templates/:key/apply', (req, res) => {
+  try {
+    res.json(applyTemplate(req.params.key));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
 });
 
 router.get('/settings', (_req, res) => {

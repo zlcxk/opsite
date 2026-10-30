@@ -393,6 +393,9 @@ export interface KnowledgeNote {
   tags: string[];
   relatedSoftwareId: string | null;
   relatedSoftwareName: string | null;
+  techNodeId: string | null;
+  techNodeName: string | null;
+  techDomainName: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -786,4 +789,249 @@ export interface FreshnessResponse {
 export interface ApiError {
   error: string;
   details?: unknown;
+}
+
+/* ---------------------------------------------------------------------------
+ * Technology Map (P5)
+ * ------------------------------------------------------------------------ */
+
+export type TechDomainStatus = 'active' | 'archived';
+export type TechNodeStatus = 'active' | 'archived';
+export type TechFocusLevel = 'normal' | 'focus';
+export type TechNodeType =
+  | 'domain'
+  | 'concept'
+  | 'component'
+  | 'resource'
+  | 'protocol'
+  | 'practice'
+  | 'direction';
+export type TechMasteryStatus =
+  | 'unknown'
+  | 'to_learn'
+  | 'learning'
+  | 'understood'
+  | 'mastered'
+  | 'deep_dive';
+export type TechRelationType =
+  | 'contains'
+  | 'depends_on'
+  | 'based_on'
+  | 'extends'
+  | 'alternative'
+  | 'implements'
+  | 'related';
+export type TechViewType = 'architecture' | 'workflow' | 'relation' | 'deployment';
+
+export interface TechExternalLink {
+  label: string;
+  url: string;
+}
+
+export interface TechDomain {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  cover: string | null;
+  status: TechDomainStatus;
+  focusLevel: TechFocusLevel;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TechMasteryCounts {
+  unknown: number;
+  to_learn: number;
+  learning: number;
+  understood: number;
+  mastered: number;
+  deep_dive: number;
+}
+
+export interface TechDomainSummary extends TechDomain {
+  nodeCount: number;
+  focusCount: number;
+  masteryCounts: TechMasteryCounts;
+  lastNodeUpdatedAt: string | null;
+}
+
+export interface TechNodeSummary {
+  id: string;
+  domainId: string;
+  parentId: string | null;
+  name: string;
+  nodeType: TechNodeType;
+  summary: string | null;
+  status: TechNodeStatus;
+  masteryStatus: TechMasteryStatus;
+  focusLevel: TechFocusLevel;
+  sortOrder: number;
+  childCount: number;
+  updatedAt: string;
+}
+
+export interface TechTreeNode extends TechNodeSummary {
+  children: TechTreeNode[];
+}
+
+export interface TechNode extends TechNodeSummary {
+  description: string | null;
+  technicalRole: string | null;
+  corePrinciple: string | null;
+  solvedProblem: string | null;
+  keyMechanism: string | null;
+  useCases: string | null;
+  commonIssues: string | null;
+  docsUrl: string | null;
+  repoUrl: string | null;
+  referenceLinks: TechExternalLink[];
+  researchQuestions: string | null;
+  personalNotes: string | null;
+  createdAt: string;
+}
+
+export interface TechRelation {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  relationType: TechRelationType;
+  description: string | null;
+  createdAt: string;
+}
+
+export interface TechRelationWithNodes extends TechRelation {
+  source: TechNodeSummary;
+  target: TechNodeSummary;
+}
+
+export interface TechGraphNode {
+  id: string;
+  nodeId: string | null;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  note: string | null;
+  nodeType: TechNodeType | null;
+}
+
+export interface TechGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string | null;
+  relationType: TechRelationType | null;
+}
+
+export interface TechGraphData {
+  nodes: TechGraphNode[];
+  edges: TechGraphEdge[];
+}
+
+export interface TechView {
+  id: string;
+  domainId: string;
+  name: string;
+  description: string | null;
+  viewType: TechViewType;
+  graphData: TechGraphData;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TechViewSummary {
+  id: string;
+  domainId: string;
+  name: string;
+  description: string | null;
+  viewType: TechViewType;
+  sortOrder: number;
+  nodeCount: number;
+  edgeCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TechSoftwareLink {
+  software: SoftwareSummary;
+  linkedAt: string;
+}
+
+export interface TechRadarLink {
+  radarItem: RadarItem;
+  linkedAt: string;
+}
+
+export interface TechDiscoveryLink {
+  candidate: DiscoveryCandidate;
+  linkedAt: string;
+}
+
+export interface TechNodeDetail {
+  node: TechNode;
+  domain: TechDomain;
+  parent: TechNodeSummary | null;
+  breadcrumbs: TechNodeSummary[];
+  children: TechNodeSummary[];
+  relations: TechRelationWithNodes[];
+  software: TechSoftwareLink[];
+  radar: TechRadarLink[];
+  discovery: TechDiscoveryLink[];
+  notes: KnowledgeNote[];
+  views: TechViewSummary[];
+}
+
+export interface TechDomainDetail {
+  domain: TechDomainSummary;
+  tree: TechTreeNode[];
+  nodes: TechNodeSummary[];
+  views: TechViewSummary[];
+  recentNodes: TechNodeSummary[];
+}
+
+export interface TechOverview {
+  domains: TechDomainSummary[];
+  recentNodes: TechNodeSummary[];
+  learningNodes: TechNodeSummary[];
+  focusNodes: TechNodeSummary[];
+  stats: {
+    domains: number;
+    nodes: number;
+    learning: number;
+    focus: number;
+    mastered: number;
+  };
+}
+
+export interface TechNodeListResponse {
+  items: TechNodeSummary[];
+  total: number;
+}
+
+export interface TechViewDetail {
+  view: TechView;
+  domain: TechDomain;
+  nodes: TechNodeSummary[];
+}
+
+export interface TechTemplateSummary {
+  key: string;
+  name: string;
+  description: string;
+  appliedAt: string | null;
+}
+
+export interface TechTemplateApplyResult {
+  template: TechTemplateSummary;
+  inserted: {
+    domains: number;
+    nodes: number;
+    relations: number;
+    views: number;
+    links: number;
+  };
 }

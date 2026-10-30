@@ -531,6 +531,95 @@ CREATE TABLE IF NOT EXISTS operation_alerts (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_operation_alert_status ON operation_alerts(status, last_seen_at DESC);
+
+/* ------------------------------ Technology Map ------------------------------ */
+CREATE TABLE IF NOT EXISTS tech_domains (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  icon TEXT,
+  cover TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  focus_level TEXT NOT NULL DEFAULT 'normal',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tech_nodes (
+  id TEXT PRIMARY KEY,
+  domain_id TEXT NOT NULL REFERENCES tech_domains(id) ON DELETE CASCADE,
+  parent_id TEXT REFERENCES tech_nodes(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  node_type TEXT NOT NULL DEFAULT 'concept',
+  summary TEXT,
+  description TEXT,
+  technical_role TEXT,
+  core_principle TEXT,
+  solved_problem TEXT,
+  key_mechanism TEXT,
+  use_cases TEXT,
+  common_issues TEXT,
+  docs_url TEXT,
+  repo_url TEXT,
+  reference_links TEXT NOT NULL DEFAULT '[]',
+  personal_notes TEXT,
+  research_questions TEXT,
+  mastery_status TEXT NOT NULL DEFAULT 'unknown',
+  focus_level TEXT NOT NULL DEFAULT 'normal',
+  status TEXT NOT NULL DEFAULT 'active',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tech_relations (
+  id TEXT PRIMARY KEY,
+  source_node_id TEXT NOT NULL REFERENCES tech_nodes(id) ON DELETE CASCADE,
+  target_node_id TEXT NOT NULL REFERENCES tech_nodes(id) ON DELETE CASCADE,
+  relation_type TEXT NOT NULL,
+  description TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tech_views (
+  id TEXT PRIMARY KEY,
+  domain_id TEXT NOT NULL REFERENCES tech_domains(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  view_type TEXT NOT NULL DEFAULT 'architecture',
+  graph_data TEXT NOT NULL DEFAULT '{"nodes":[],"edges":[]}',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tech_node_software (
+  node_id TEXT NOT NULL REFERENCES tech_nodes(id) ON DELETE CASCADE,
+  software_id TEXT NOT NULL REFERENCES software(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, software_id)
+);
+
+CREATE TABLE IF NOT EXISTS tech_node_radar (
+  node_id TEXT NOT NULL REFERENCES tech_nodes(id) ON DELETE CASCADE,
+  radar_item_id TEXT NOT NULL REFERENCES radar_item(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, radar_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS tech_node_discovery (
+  node_id TEXT NOT NULL REFERENCES tech_nodes(id) ON DELETE CASCADE,
+  candidate_id TEXT NOT NULL REFERENCES discovery_candidate(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (node_id, candidate_id)
+);
+
+CREATE TABLE IF NOT EXISTS tech_seed (
+  key TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
 `);
 
 // Forward-compatible migration for databases created by earlier releases.
@@ -555,6 +644,9 @@ ensureColumn('discovery_job', 'items_skipped', 'INTEGER NOT NULL DEFAULT 0');
 // Tasks seeded from the global sync schedule keep following it until the user
 // edits that task's cron directly.
 ensureColumn('collection_tasks', 'schedule_custom', 'INTEGER NOT NULL DEFAULT 0');
+// Knowledge notes can optionally be attached to a technology node. The link is
+// additive: existing notes keep working exactly as before.
+ensureColumn('knowledge_note', 'tech_node_id', 'TEXT');
 db.prepare("UPDATE radar_item SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''").run();
 
 db.exec(`
@@ -563,6 +655,16 @@ CREATE INDEX IF NOT EXISTS idx_radar_status ON radar_item(status);
 CREATE INDEX IF NOT EXISTS idx_radar_record_item ON radar_record(radar_item_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_job_run ON sync_job(run_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_job_run ON discovery_job(run_id);
+CREATE INDEX IF NOT EXISTS idx_tech_nodes_domain ON tech_nodes(domain_id, parent_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_tech_nodes_parent ON tech_nodes(parent_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_tech_nodes_status ON tech_nodes(status, mastery_status, focus_level);
+CREATE INDEX IF NOT EXISTS idx_tech_relations_source ON tech_relations(source_node_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_tech_relations_target ON tech_relations(target_node_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_tech_views_domain ON tech_views(domain_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_tech_node_software_software ON tech_node_software(software_id);
+CREATE INDEX IF NOT EXISTS idx_tech_node_radar_radar ON tech_node_radar(radar_item_id);
+CREATE INDEX IF NOT EXISTS idx_tech_node_discovery_candidate ON tech_node_discovery(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_note_tech_node ON knowledge_note(tech_node_id);
 `);
 
 const seedTimestamp = new Date().toISOString();

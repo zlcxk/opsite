@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import { FilePlus2, NotebookPen, Save, Search, Trash2 } from 'lucide-react';
-import type { KnowledgeNote } from '@shared/types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { FilePlus2, Network, NotebookPen, Save, Search, Trash2 } from 'lucide-react';
+import type {
+  KnowledgeNote,
+  TechDomainSummary,
+  TechNodeListResponse,
+} from '@shared/types';
 import { useApi, useDocumentTitle } from '../lib/hooks';
 import { api } from '../lib/api';
 import { useAppData } from '../contexts/AppDataContext';
@@ -13,13 +18,17 @@ interface Draft {
   content: string;
   tags: string;
   relatedSoftwareId: string;
+  techNodeId: string;
 }
 
-const emptyDraft: Draft = { title: '', content: '', tags: '', relatedSoftwareId: '' };
+const emptyDraft: Draft = { title: '', content: '', tags: '', relatedSoftwareId: '', techNodeId: '' };
 
 export function Knowledge() {
   useDocumentTitle('知识库');
+  const [searchParams] = useSearchParams();
   const { data, loading, error, refetch, setData } = useApi<KnowledgeNote[]>('/knowledge');
+  const { data: techDomains } = useApi<TechDomainSummary[]>('/tech/domains');
+  const { data: techNodes } = useApi<TechNodeListResponse>('/tech/nodes?status=active&limit=300');
   const { data: appData } = useAppData();
   const { push } = useToast();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -29,8 +38,10 @@ export function Knowledge() {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [search, setSearch] = useState('');
   const [deleting, setDeleting] = useState<KnowledgeNote | null>(null);
+  const queryApplied = useRef(false);
 
   const notes = data ?? [];
+  const techNodeList = techNodes?.items ?? [];
   const selected = notes.find((note) => note.id === selectedId) ?? null;
 
   const filtered = useMemo(() => {
@@ -50,6 +61,7 @@ export function Knowledge() {
       content: note.content,
       tags: note.tags.join(', '),
       relatedSoftwareId: note.relatedSoftwareId ?? '',
+      techNodeId: note.techNodeId ?? '',
     });
     setSelectedId(note.id);
     setCreating(false);
@@ -58,7 +70,29 @@ export function Knowledge() {
   };
 
   useEffect(() => {
+    if (!data || queryApplied.current) return;
+    const noteParam = searchParams.get('noteId');
+    const newParam = searchParams.get('new');
+    const techParam = searchParams.get('techNodeId');
+    if (!noteParam && newParam !== '1') return;
+    queryApplied.current = true;
+    if (newParam === '1') {
+      setSelectedId(null);
+      setCreating(true);
+      setDraft({ ...emptyDraft, techNodeId: techParam ?? '' });
+      setDirty(false);
+      setSaveState('idle');
+      return;
+    }
+    const note = noteParam ? data.find((item) => item.id === noteParam) : null;
+    if (note) loadDraft(note);
+    // Query parameters are consumed once, after notes load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, searchParams]);
+
+  useEffect(() => {
     if (selectedId || creating || notes.length === 0) return;
+    if (searchParams.get('noteId') || searchParams.get('new') === '1') return;
     loadDraft(notes[0]);
     // Only used for the initial selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -79,6 +113,7 @@ export function Knowledge() {
           .map((tag) => tag.trim())
           .filter(Boolean),
         relatedSoftwareId: draft.relatedSoftwareId || null,
+        techNodeId: draft.techNodeId || null,
       };
       const saved = creating
         ? await api.post<KnowledgeNote>('/knowledge', body)
@@ -244,6 +279,11 @@ export function Knowledge() {
                     <strong>{note.title}</strong>
                     <span>{note.content.trim() || '暂无内容'}</span>
                     <span className="mt-1.5 flex flex-wrap items-center gap-1">
+                      {note.techNodeName && (
+                        <em className="note-tag note-tag-tech">
+                          <Network size={9} /> {note.techNodeName}
+                        </em>
+                      )}
                       {note.relatedSoftwareName && (
                         <em className="note-tag">{note.relatedSoftwareName}</em>
                       )}
@@ -281,6 +321,7 @@ export function Knowledge() {
             </div>
 
             <input
+              className="note-title-input"
               value={draft.title}
               onChange={(event) => {
                 setDraft({ ...draft, title: event.target.value });
@@ -299,7 +340,38 @@ export function Knowledge() {
               aria-label="笔记内容"
             />
 
-            <div className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4 sm:grid-cols-2">
+            <div className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4 sm:grid-cols-3">
+              <label className="field">
+                <span className="field-label">关联技术节点</span>
+                <select
+                  className="field-input"
+                  value={draft.techNodeId}
+                  onChange={(event) => {
+                    setDraft({ ...draft, techNodeId: event.target.value });
+                    setDirty(true);
+                  }}
+                >
+                  <option value="">不关联</option>
+                  {(techDomains ?? []).map((domain) => {
+                    const domainNodes = techNodeList.filter((node) => node.domainId === domain.id);
+                    if (!domainNodes.length) return null;
+                    return (
+                      <optgroup key={domain.id} label={domain.name}>
+                        {domainNodes.map((node) => (
+                          <option key={node.id} value={node.id}>
+                            {node.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
+                </select>
+                {draft.techNodeId && (
+                  <Link to={`/tech/nodes/${draft.techNodeId}`} className="tech-note-node-link">
+                    在技术地图中打开 <Network size={10} />
+                  </Link>
+                )}
+              </label>
               <label className="field">
                 <span className="field-label">关联软件</span>
                 <select

@@ -10,6 +10,7 @@ import {
   GitBranch,
   LayoutDashboard,
   ListChecks,
+  Network,
   NotebookPen,
   Radar,
   Rss,
@@ -41,6 +42,7 @@ const operationsNav = [
 ];
 
 const exploreNav = [
+  { to: '/tech', label: '技术地图', icon: Network },
   { to: '/radar', label: '技术雷达', icon: Radar },
   { to: '/discover', label: '技术发现', icon: Compass },
   { to: '/follows', label: '关注与订阅', icon: Rss },

@@ -312,6 +312,9 @@ interface NoteRow {
   tags: string;
   related_software_id: string | null;
   related_software_name: string | null;
+  tech_node_id: string | null;
+  tech_node_name: string | null;
+  tech_domain_name: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -331,31 +334,39 @@ function mapNote(row: NoteRow): KnowledgeNote {
     tags,
     relatedSoftwareId: row.related_software_id,
     relatedSoftwareName: row.related_software_name,
+    techNodeId: row.tech_node_id ?? null,
+    techNodeName: row.tech_node_name ?? null,
+    techDomainName: row.tech_domain_name ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-export function listNotes(): KnowledgeNote[] {
+const noteSelect = `
+  SELECT n.*,
+    s.name AS related_software_name,
+    tn.name AS tech_node_name,
+    td.name AS tech_domain_name
+  FROM knowledge_note n
+  LEFT JOIN software s ON s.id = n.related_software_id
+  LEFT JOIN tech_nodes tn ON tn.id = n.tech_node_id
+  LEFT JOIN tech_domains td ON td.id = tn.domain_id`;
+
+export function listNotes(options: { techNodeId?: string } = {}): KnowledgeNote[] {
+  const clauses = ['(s.deleted_at IS NULL OR n.related_software_id IS NULL)'];
+  const params: unknown[] = [];
+  if (options.techNodeId) {
+    clauses.push('n.tech_node_id = ?');
+    params.push(options.techNodeId);
+  }
   const rows = db
-    .prepare(
-      `SELECT n.*, s.name AS related_software_name
-       FROM knowledge_note n LEFT JOIN software s ON s.id = n.related_software_id
-       WHERE s.deleted_at IS NULL OR n.related_software_id IS NULL
-       ORDER BY n.updated_at DESC`,
-    )
-    .all() as NoteRow[];
+    .prepare(`${noteSelect} WHERE ${clauses.join(' AND ')} ORDER BY n.updated_at DESC`)
+    .all(...params) as NoteRow[];
   return rows.map(mapNote);
 }
 
 export function getNote(id: string): KnowledgeNote | null {
-  const row = db
-    .prepare(
-      `SELECT n.*, s.name AS related_software_name
-       FROM knowledge_note n LEFT JOIN software s ON s.id = n.related_software_id
-       WHERE n.id = ?`,
-    )
-    .get(id) as NoteRow | undefined;
+  const row = db.prepare(`${noteSelect} WHERE n.id = ?`).get(id) as NoteRow | undefined;
   return row ? mapNote(row) : null;
 }
 
@@ -364,18 +375,20 @@ export function createNote(input: {
   content?: string;
   tags?: string[];
   relatedSoftwareId?: string | null;
+  techNodeId?: string | null;
 }): KnowledgeNote {
   const id = crypto.randomUUID();
   const timestamp = nowIso();
   db.prepare(
-    `INSERT INTO knowledge_note (id, title, content, tags, related_software_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO knowledge_note (id, title, content, tags, related_software_id, tech_node_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.title.trim(),
     input.content ?? '',
     JSON.stringify((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean)),
     input.relatedSoftwareId || null,
+    input.techNodeId || null,
     timestamp,
     timestamp,
   );
@@ -384,20 +397,27 @@ export function createNote(input: {
 
 export function updateNote(
   id: string,
-  input: { title?: string; content?: string; tags?: string[]; relatedSoftwareId?: string | null },
+  input: {
+    title?: string;
+    content?: string;
+    tags?: string[];
+    relatedSoftwareId?: string | null;
+    techNodeId?: string | null;
+  },
 ): KnowledgeNote | null {
   const existing = db.prepare('SELECT * FROM knowledge_note WHERE id = ?').get(id) as
     | Record<string, any>
     | undefined;
   if (!existing) return null;
   db.prepare(
-    `UPDATE knowledge_note SET title = ?, content = ?, tags = ?, related_software_id = ?, updated_at = ?
+    `UPDATE knowledge_note SET title = ?, content = ?, tags = ?, related_software_id = ?, tech_node_id = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     input.title?.trim() || existing.title,
     input.content ?? existing.content,
     input.tags ? JSON.stringify(input.tags.map((tag) => tag.trim()).filter(Boolean)) : existing.tags,
     input.relatedSoftwareId !== undefined ? input.relatedSoftwareId || null : existing.related_software_id,
+    input.techNodeId !== undefined ? input.techNodeId || null : existing.tech_node_id,
     nowIso(),
     id,
   );

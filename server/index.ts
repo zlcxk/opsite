@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import routes from './routes.js';
 import { db } from './db.js';
 import { startScheduler, stopScheduler } from './services/scheduler.js';
+import { seedTechnologyTemplates } from './services/tech-seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -60,6 +61,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 
 const server = app.listen(port, host, () => {
   console.log(`[opsite] API listening on http://${host}:${port}`);
+  seedTechnologyTemplates();
   startScheduler();
 });
 
