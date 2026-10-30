@@ -100,7 +100,9 @@ interface DiscoveryJobRow {
   items_found: number;
   items_new: number;
   items_updated: number;
+  items_skipped: number;
   items_duplicate: number;
+  run_id: string | null;
   error_summary: string | null;
 }
 
@@ -224,7 +226,9 @@ function mapJob(row: DiscoveryJobRow): DiscoveryJob {
     itemsFound: row.items_found,
     itemsNew: row.items_new,
     itemsUpdated: row.items_updated,
+    itemsSkipped: row.items_skipped,
     itemsDuplicate: row.items_duplicate,
+    runId: row.run_id,
     errorSummary: row.error_summary,
   };
 }
@@ -392,6 +396,7 @@ interface UpsertResult {
   candidateId: string;
   created: boolean;
   duplicate: boolean;
+  changed: boolean;
 }
 
 function upsertCandidate(
@@ -409,6 +414,7 @@ function upsertCandidate(
       candidateId: existing?.id ?? '',
       created: false,
       duplicate: true,
+      changed: false,
     };
   }
   seen.add(key);
@@ -421,6 +427,21 @@ function upsertCandidate(
   if (existingByItem) {
     // External source fields only. User decisions (status, radar link) and the
     // original first-discovered timestamp are never overwritten.
+    const changed =
+      existingByItem.source_ref !== item.sourceRef ||
+      existingByItem.title !== item.title ||
+      existingByItem.description !== item.description ||
+      existingByItem.category !== item.category ||
+      existingByItem.canonical_url !== item.canonicalUrl ||
+      existingByItem.homepage_url !== item.homepageUrl ||
+      existingByItem.source_url !== item.sourceUrl ||
+      existingByItem.source_created_at !== item.sourceCreatedAt ||
+      existingByItem.source_updated_at !== item.sourceUpdatedAt ||
+      existingByItem.source_pushed_at !== item.sourcePushedAt ||
+      existingByItem.stars_count !== item.starsCount ||
+      existingByItem.forks_count !== item.forksCount ||
+      existingByItem.language !== item.language ||
+      existingByItem.license !== item.license;
     db.prepare(
       `UPDATE discovery_candidate SET
          source_ref = ?, title = ?, description = ?, category = ?, canonical_url = ?,
@@ -449,7 +470,7 @@ function upsertCandidate(
       existingByItem.id,
     );
     linkCandidateSource(existingByItem.id, item, timestamp);
-    return { candidateId: existingByItem.id, created: false, duplicate: false };
+    return { candidateId: existingByItem.id, created: false, duplicate: false, changed };
   }
 
   const existingByUrl = db
@@ -460,7 +481,7 @@ function upsertCandidate(
     db.prepare(
       'UPDATE discovery_candidate SET last_seen_at = ?, last_fetched_at = ?, updated_at = ? WHERE id = ?',
     ).run(timestamp, timestamp, timestamp, existingByUrl.id);
-    return { candidateId: existingByUrl.id, created: false, duplicate: true };
+    return { candidateId: existingByUrl.id, created: false, duplicate: true, changed: false };
   }
 
   const id = crypto.randomUUID();
@@ -502,7 +523,7 @@ function upsertCandidate(
   } catch (error) {
     console.error('[notifications] discovery dispatch failed', error);
   }
-  return { candidateId: id, created: true, duplicate: false };
+  return { candidateId: id, created: true, duplicate: false, changed: true };
 }
 
 function linkCandidateSource(candidateId: string, item: DiscoveryFetchedItem, timestamp: string): void {
@@ -525,13 +546,17 @@ function linkCandidateSource(candidateId: string, item: DiscoveryFetchedItem, ti
   );
 }
 
-function insertJob(sourceType: DiscoverySourceType, trigger: 'manual' | 'schedule'): string {
+function insertJob(
+  sourceType: DiscoverySourceType,
+  trigger: 'manual' | 'schedule',
+  runId: string | null,
+): string {
   const id = crypto.randomUUID();
   db.prepare(
     `INSERT INTO discovery_job
-      (id, source_type, trigger, status, started_at)
-     VALUES (?, ?, ?, 'running', ?)`,
-  ).run(id, sourceType, trigger, nowIso());
+      (id, source_type, trigger, status, started_at, run_id)
+     VALUES (?, ?, ?, 'running', ?, ?)`,
+  ).run(id, sourceType, trigger, nowIso(), runId);
   return id;
 }
 
@@ -542,19 +567,21 @@ function finishJob(
     found: number;
     created: number;
     updated: number;
+    skipped: number;
     duplicate: number;
     error?: string | null;
   },
 ): void {
   db.prepare(
     `UPDATE discovery_job SET status = ?, finished_at = ?, items_found = ?, items_new = ?,
-       items_updated = ?, items_duplicate = ?, error_summary = ? WHERE id = ?`,
+       items_updated = ?, items_skipped = ?, items_duplicate = ?, error_summary = ? WHERE id = ?`,
   ).run(
     result.status,
     nowIso(),
     result.found,
     result.created,
     result.updated,
+    result.skipped,
     result.duplicate,
     result.error ?? null,
     id,
@@ -606,6 +633,8 @@ function setRuleResult(
 export interface DiscoveryRunOptions {
   trigger: 'manual' | 'schedule';
   adapters?: Record<DiscoverySourceType, DiscoveryAdapter>;
+  sourceTypes?: DiscoverySourceType[];
+  runId?: string;
 }
 
 export interface DiscoveryRunResult {
@@ -621,12 +650,15 @@ export async function runDiscovery(
   options: DiscoveryRunOptions,
 ): Promise<DiscoveryRunResult> {
   const adapters = options.adapters ?? discoveryAdapters;
-  const sources = db
+  let sources = db
     .prepare(
       `SELECT * FROM discovery_source WHERE enabled = 1
        ORDER BY CASE type WHEN 'github' THEN 0 ELSE 1 END, type`,
     )
     .all() as DiscoverySourceRow[];
+  if (options.sourceTypes?.length) {
+    sources = sources.filter((source) => options.sourceTypes?.includes(source.type));
+  }
   const jobs: DiscoveryJob[] = [];
   let failed = 0;
 
@@ -638,10 +670,11 @@ export async function runDiscovery(
          WHERE r.source_id = ? AND r.enabled = 1 ORDER BY r.id`,
       )
       .all(source.id) as DiscoveryRuleRow[];
-    const jobId = insertJob(source.type, options.trigger);
+    const jobId = insertJob(source.type, options.trigger, options.runId ?? null);
     let found = 0;
     let created = 0;
     let updated = 0;
+    let skipped = 0;
     let duplicate = 0;
     let ruleSuccesses = 0;
     const errors: string[] = [];
@@ -661,7 +694,8 @@ export async function runDiscovery(
           const outcome = upsertCandidate(item, seen);
           if (outcome.created) created += 1;
           else if (outcome.duplicate) duplicate += 1;
-          else updated += 1;
+          else if (outcome.changed) updated += 1;
+          else skipped += 1;
         }
         ruleSuccesses += 1;
         setRuleResult(rule.id, { ok: true, result: result.note ?? `发现 ${result.items.length} 条候选` });
@@ -680,6 +714,7 @@ export async function runDiscovery(
       found,
       created,
       updated,
+      skipped,
       duplicate,
       error: errorSummary,
     });
@@ -690,7 +725,7 @@ export async function runDiscovery(
     else sourceStatus = 'ok';
     setSourceRunResult(source.id, {
       status: sourceStatus,
-      result: `新增 ${created} · 更新 ${updated} · 重复 ${duplicate}`,
+      result: `新增 ${created} · 更新 ${updated} · 未变 ${skipped} · 重复 ${duplicate}`,
       error: errorSummary,
     });
     if (ruleSuccesses === 0) failed += 1;

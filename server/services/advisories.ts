@@ -104,6 +104,7 @@ export function refreshAdvisoryInsights(softwareId: string): void {
 export interface UpsertAdvisoryResult {
   id: string;
   created: boolean;
+  changed: boolean;
   priority: Priority;
   title: string;
   url: string | null;
@@ -128,6 +129,7 @@ export function upsertAdvisory(
 
   let advisoryId: string;
   let created = false;
+  let changed = false;
 
   if (!existing) {
     advisoryId = crypto.randomUUID();
@@ -168,6 +170,7 @@ export function upsertAdvisory(
       timestamp,
     );
     created = true;
+    changed = true;
   } else {
     advisoryId = existing.id;
     const existingConfidence = CONFIDENCE_RANK[existing.confidence] ?? 1;
@@ -183,6 +186,52 @@ export function upsertAdvisory(
       : existing.published_at || raw.publishedAt;
     const updatedAt = [existing.upstream_updated_at, raw.updatedAt].filter(Boolean).sort().pop() ?? null;
     const fixedVersions = [...new Set([...parseJsonArray(existing.fixed_versions), ...raw.fixedVersions])];
+    const nextScore = useIncomingScore ? raw.score : existing.score;
+    const nextScoreSource = useIncomingScore ? raw.scoreSource : existing.score_source;
+    const nextKev = existing.kev || raw.kev ? 1 : 0;
+    const nextKevDueDate = existing.kev_due_date || raw.kevDueDate;
+    const nextConfidence = betterSource ? raw.confidence : existing.confidence;
+    const existingFixed = [...parseJsonArray(existing.fixed_versions)].sort().join('|');
+    const incomingFixed = [...fixedVersions].sort().join('|');
+    const existingRanges = db
+      .prepare(
+        `SELECT range_text, introduced, fixed, last_affected FROM advisory_affected_range
+         WHERE advisory_id = ? AND source_id = ? ORDER BY range_text`,
+      )
+      .all(advisoryId, sourceId) as Array<{
+      range_text: string | null;
+      introduced: string | null;
+      fixed: string | null;
+      last_affected: string | null;
+    }>;
+    const nextRanges = [...raw.affectedRanges]
+      .map((range) => {
+        const text = range.rangeText ?? formatStructuredRange(range);
+        return `${text ?? ''}|${range.introduced ?? ''}|${range.fixed ?? ''}|${range.lastAffected ?? ''}`;
+      })
+      .sort()
+      .join('||');
+    const existingRangeSignature = existingRanges
+      .map(
+        (range) =>
+          `${range.range_text ?? ''}|${range.introduced ?? ''}|${range.fixed ?? ''}|${range.last_affected ?? ''}`,
+      )
+      .sort()
+      .join('||');
+    changed =
+      existing.title !== title ||
+      existing.description !== description ||
+      existing.severity !== severity ||
+      existing.score !== nextScore ||
+      existing.score_source !== nextScoreSource ||
+      existing.url !== url ||
+      existing.published_at !== publishedAt ||
+      existing.upstream_updated_at !== updatedAt ||
+      existing.kev !== nextKev ||
+      existing.kev_due_date !== nextKevDueDate ||
+      existing.confidence !== nextConfidence ||
+      existingFixed !== incomingFixed ||
+      existingRangeSignature !== nextRanges;
 
     db.prepare(
       `UPDATE security_advisory SET title = ?, description = ?, severity = ?, score = ?, score_source = ?,
@@ -193,14 +242,14 @@ export function upsertAdvisory(
       title,
       description,
       severity,
-      useIncomingScore ? raw.score : existing.score,
-      useIncomingScore ? raw.scoreSource : existing.score_source,
+      nextScore,
+      nextScoreSource,
       url,
       publishedAt,
       updatedAt,
-      existing.kev || raw.kev ? 1 : 0,
-      existing.kev_due_date || raw.kevDueDate,
-      betterSource ? raw.confidence : existing.confidence,
+      nextKev,
+      nextKevDueDate,
+      nextConfidence,
       JSON.stringify(fixedVersions),
       timestamp,
       advisoryId,
@@ -250,6 +299,7 @@ export function upsertAdvisory(
   return {
     id: advisoryId,
     created,
+    changed,
     priority: recalculated?.priority ?? 'P3',
     title: raw.title || identifier,
     url: raw.url,

@@ -184,6 +184,10 @@ export interface SyncJob {
   finishedAt: string | null;
   itemsFound: number;
   itemsNew: number;
+  itemsUpdated: number;
+  itemsSkipped: number;
+  dataChanged: boolean;
+  runId: string | null;
   error: string | null;
 }
 
@@ -329,7 +333,9 @@ export interface DiscoveryJob {
   itemsFound: number;
   itemsNew: number;
   itemsUpdated: number;
+  itemsSkipped: number;
   itemsDuplicate: number;
+  runId: string | null;
   errorSummary: string | null;
 }
 
@@ -430,7 +436,15 @@ export type NotificationRuleType =
   | 'high_risk_advisory'
   | 'advisory_update'
   | 'project_update'
-  | 'discovery';
+  | 'discovery'
+  | 'source_anomaly'
+  | 'rate_limit'
+  | 'task_failure'
+  | 'task_timeout'
+  | 'data_stale'
+  | 'task_recovered';
+
+export type NotificationTargetType = FollowTargetType | 'source' | 'task';
 
 export type NotificationSeverity = 'urgent' | 'important' | 'normal';
 export type NotificationMinSeverity = 'all' | 'important' | 'urgent';
@@ -465,7 +479,7 @@ export interface NotificationItem {
   severity: NotificationSeverity;
   title: string;
   body: string | null;
-  targetType: FollowTargetType;
+  targetType: NotificationTargetType;
   targetId: string;
   targetName: string;
   eventId: string | null;
@@ -555,6 +569,218 @@ export interface SearchResult {
   software: Array<{ id: string; name: string; category: string }>;
   events: IntelEvent[];
   advisories: Array<{ id: string; softwareId: string; identifier: string; title: string; severity: string }>;
+}
+
+export type DataSourceType = 'lifecycle' | 'release' | 'security' | 'discovery';
+export type SourceHealthStatus = 'ok' | 'error' | 'rate_limited' | 'unknown' | 'disabled';
+export type FreshnessStatus = 'fresh' | 'expiring' | 'expired' | 'unknown';
+export type CollectionRunStatus = 'running' | 'success' | 'failed' | 'timeout';
+export type CollectionTrigger = 'scheduled' | 'manual' | 'retry';
+export type OperationIssueKind =
+  | 'source_anomaly'
+  | 'rate_limit'
+  | 'task_failure'
+  | 'task_timeout'
+  | 'data_stale'
+  | 'scheduler';
+
+export interface SourceQuotaRecord {
+  id: string;
+  sourceId: string;
+  quotaLimit: number | null;
+  quotaRemaining: number | null;
+  quotaUsed: number | null;
+  resetAt: string | null;
+  rateLimited: boolean;
+  recordedAt: string;
+}
+
+export interface SourceHealthCheck {
+  id: string;
+  sourceId: string;
+  status: 'ok' | 'error' | 'rate_limited' | 'unknown';
+  responseTimeMs: number | null;
+  httpStatus: number | null;
+  errorMessage: string | null;
+  checkedAt: string;
+}
+
+export interface CollectionRun {
+  id: string;
+  taskId: string;
+  taskName: string;
+  taskKey: string;
+  sourceId: string;
+  sourceName: string;
+  sourceKey: string;
+  triggerType: CollectionTrigger;
+  status: CollectionRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  fetchedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
+export interface DataSource {
+  id: string;
+  sourceKey: string;
+  name: string;
+  type: DataSourceType;
+  description: string | null;
+  officialUrl: string | null;
+  enabled: boolean;
+  healthStatus: SourceHealthStatus;
+  lastCheckAt: string | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastDataUpdatedAt: string | null;
+  freshnessInterval: number;
+  freshnessGracePeriod: number;
+  freshnessEnabled: boolean;
+  freshnessStatus: FreshnessStatus;
+  freshnessAgeHours: number | null;
+  consecutiveFailures: number;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  lastQuota: SourceQuotaRecord | null;
+  lastRun: CollectionRun | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectionTask {
+  id: string;
+  taskKey: string;
+  name: string;
+  sourceId: string;
+  sourceName: string;
+  sourceKey: string;
+  description: string | null;
+  schedule: string;
+  enabled: boolean;
+  timeoutSeconds: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  lastRun: CollectionRun | null;
+  lastStatus: CollectionRunStatus | 'never';
+  successRate: number | null;
+  avgDurationMs: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OperationIssue {
+  id: string;
+  kind: OperationIssueKind;
+  severity: NotificationSeverity;
+  title: string;
+  description: string;
+  sourceId: string | null;
+  sourceName: string | null;
+  taskId: string | null;
+  taskName: string | null;
+  link: string | null;
+  occurredAt: string | null;
+}
+
+export interface OperationsStats {
+  totalSources: number;
+  healthySources: number;
+  abnormalSources: number;
+  todayRuns: number;
+  successRate: number | null;
+  openIssues: number;
+}
+
+export interface OperationsOverview {
+  stats: OperationsStats;
+  scheduler: { enabled: boolean; nextRunAt: string | null; runningTasks: number };
+  sources: DataSource[];
+  runs: CollectionRun[];
+  issues: OperationIssue[];
+}
+
+export interface SourceListResponse {
+  items: DataSource[];
+  summary: {
+    total: number;
+    healthy: number;
+    error: number;
+    rateLimited: number;
+    unknown: number;
+    disabled: number;
+  };
+}
+
+export interface SourceDetailResponse {
+  source: DataSource;
+  checks: SourceHealthCheck[];
+  quotas: SourceQuotaRecord[];
+  runs: CollectionRun[];
+  tasks: CollectionTask[];
+}
+
+export interface CollectionTaskListResponse {
+  items: CollectionTask[];
+  schedulerEnabled: boolean;
+}
+
+export interface CollectionTaskDetailResponse {
+  task: CollectionTask;
+  source: DataSource;
+  runs: CollectionRun[];
+}
+
+export interface CollectionRunListResponse {
+  items: CollectionRun[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CollectionRunDetailResponse {
+  run: CollectionRun;
+  task: CollectionTask;
+  source: DataSource;
+  details: Array<{
+    id: string;
+    label: string;
+    status: string;
+    startedAt: string;
+    finishedAt: string | null;
+    itemsFound: number;
+    itemsNew: number;
+    itemsUpdated: number;
+    itemsSkipped: number;
+    error: string | null;
+  }>;
+}
+
+export interface OperationsIssueResponse {
+  items: OperationIssue[];
+  counts: Record<OperationIssueKind, number>;
+}
+
+export interface FreshnessSummaryItem {
+  sourceId: string;
+  sourceName: string;
+  status: FreshnessStatus;
+  lastDataUpdatedAt: string | null;
+  ageHours: number | null;
+  intervalHours: number;
+  graceHours: number;
+  enabled: boolean;
+}
+
+export interface FreshnessResponse {
+  items: FreshnessSummaryItem[];
+  summary: Record<FreshnessStatus, number>;
 }
 
 export interface ApiError {

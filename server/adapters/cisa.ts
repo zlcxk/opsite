@@ -19,16 +19,51 @@ interface KevFeed {
 
 const FEED_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
 let lastFetchAt = 0;
-let inFlight: Promise<void> | null = null;
+let inFlight: Promise<boolean> | null = null;
 
-async function refreshFeed(force = false): Promise<void> {
-  if (!force && Date.now() - lastFetchAt < 6 * 60 * 60 * 1000) return;
+function feedSignature(entries: Array<{ cveId: string; dateAdded: string | null; dueDate: string | null }>): string {
+  return entries
+    .map((entry) => `${entry.cveId.toUpperCase()}|${entry.dateAdded ?? ''}|${entry.dueDate ?? ''}`)
+    .sort()
+    .join(';');
+}
+
+async function refreshFeed(force = false): Promise<boolean> {
+  if (!force && Date.now() - lastFetchAt < 6 * 60 * 60 * 1000) return false;
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
     const feed = await fetchJson<KevFeed>(FEED_URL, { timeoutMs: 30_000 });
-    const entries = feed.vulnerabilities ?? [];
+    const entries = (feed.vulnerabilities ?? []).filter((entry) => Boolean(entry.cveID));
     if (!entries.length) throw new Error('CISA KEV 数据为空');
+    const signature = feedSignature(
+      entries.map((entry) => ({
+        cveId: entry.cveID,
+        dateAdded: entry.dateAdded ?? null,
+        dueDate: entry.dueDate ?? null,
+      })),
+    );
+    // Compare against the stored catalog instead of module memory. A restart
+    // must not make an unchanged feed look like a data change. Rows that the
+    // feed no longer lists are ignored here because this adapter preserves
+    // historical KEV matches rather than deleting them.
+    const upstreamIds = new Set(entries.map((entry) => entry.cveID.toUpperCase()));
+    const previous = (
+      db.prepare('SELECT cve_id, date_added, due_date FROM kev_entry').all() as Array<{
+        cve_id: string;
+        date_added: string | null;
+        due_date: string | null;
+      }>
+    ).filter((row) => upstreamIds.has(row.cve_id));
+    const changed =
+      signature !==
+      feedSignature(
+        previous.map((row) => ({
+          cveId: row.cve_id,
+          dateAdded: row.date_added,
+          dueDate: row.due_date,
+        })),
+      );
     const fetchedAt = nowIso();
     const upsert = db.prepare(`
       INSERT INTO kev_entry (cve_id, vendor_project, product, vulnerability_name, date_added, short_description,
@@ -68,6 +103,7 @@ async function refreshFeed(force = false): Promise<void> {
     });
     transaction();
     lastFetchAt = Date.now();
+    return changed;
   })().finally(() => {
     inFlight = null;
   });
@@ -76,7 +112,7 @@ async function refreshFeed(force = false): Promise<void> {
 }
 
 export async function fetchCisaKev(context: AdapterContext): Promise<AdapterResult> {
-  await refreshFeed();
+  const dataChanged = await refreshFeed();
   const count = db
     .prepare(
       `SELECT COUNT(*) AS count FROM security_advisory
@@ -88,6 +124,7 @@ export async function fetchCisaKev(context: AdapterContext): Promise<AdapterResu
     advisories: [],
     itemCount: count.count,
     note: `本地已匹配 ${count.count} 条 KEV 记录`,
+    dataChanged,
   };
 }
 

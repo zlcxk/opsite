@@ -1,129 +1,181 @@
 import cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
 import type { DiscoveryOverview } from '../../shared/types.js';
-import { getSetting } from '../db.js';
-import { syncAllActive } from './sync.js';
+import { db, getSetting } from '../db.js';
+import { isDiscoveryRunning } from './discovery.js';
 import {
-  isDiscoveryRunning,
-  markInterruptedDiscoveryJobs,
-  startDiscoveryRun,
-} from './discovery.js';
+  isCollectionRunning,
+  startTaskRun,
+} from './operations.js';
+import { refreshStaleAlerts, recoverInterruptedRuns, updateTaskNextRun } from './operations-store.js';
 import { processEmailQueue } from './notifications.js';
 
-let syncTask: ScheduledTask | null = null;
-let discoveryTask: ScheduledTask | null = null;
+interface TaskRow {
+  id: string;
+  task_key: string;
+  name: string;
+  source_key: string;
+  source_type: string;
+  schedule: string;
+  enabled: number;
+  source_enabled: number;
+}
+
+interface RegisteredTask {
+  cron: ScheduledTask;
+  row: TaskRow;
+  discovery: boolean;
+}
+
+const tasks = new Map<string, RegisteredTask>();
 let notificationTask: ScheduledTask | null = null;
-let running = false;
-let lastRunAt: string | null = null;
+let lastSyncRunAt: string | null = null;
+let lastDiscoveryRunAt: string | null = null;
 
 const discoveryTimezone = process.env.DISCOVERY_TIMEZONE || 'Asia/Shanghai';
 const discoveryCron = process.env.DISCOVERY_CRON || '0 9 * * *';
 
-export function isSchedulerEnabled(): boolean {
-  return syncTask !== null && process.env.DISABLE_SCHEDULER !== 'true';
+function schedulerDisabled(): boolean {
+  return process.env.DISABLE_SCHEDULER === 'true';
 }
 
-export function getNextSyncAt(): string | null {
-  if (!syncTask || process.env.DISABLE_SCHEDULER === 'true') return null;
+function syncEnabled(): boolean {
+  return getSetting('sync_enabled', 'true') === 'true';
+}
+
+function discoveryEnabled(): boolean {
+  return process.env.DISCOVERY_ENABLED !== 'false';
+}
+
+export function isSchedulerEnabled(): boolean {
+  return tasks.size > 0 && !schedulerDisabled();
+}
+
+function nextRunOf(task: RegisteredTask): string | null {
+  if (schedulerDisabled()) return null;
   try {
-    const next = syncTask.getNextRun();
+    const next = task.cron.getNextRun();
     return next ? next.toISOString() : null;
   } catch {
     return null;
   }
 }
 
-export function getSchedulerState(): { enabled: boolean; nextSyncAt: string | null; lastRunAt: string | null } {
+export function getNextSyncAt(): string | null {
+  const values = [...tasks.values()]
+    .filter((task) => !task.discovery)
+    .map(nextRunOf)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  return values[0] ?? null;
+}
+
+export function getNextCollectionAt(): string | null {
+  const values = [...tasks.values()]
+    .map(nextRunOf)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  return values[0] ?? null;
+}
+
+export function getSchedulerState(): {
+  enabled: boolean;
+  nextSyncAt: string | null;
+  lastRunAt: string | null;
+} {
   return {
     enabled: isSchedulerEnabled(),
     nextSyncAt: getNextSyncAt(),
-    lastRunAt,
+    lastRunAt: lastSyncRunAt,
   };
 }
 
-function isDiscoveryScheduleEnabled(): boolean {
-  return (
-    discoveryTask !== null &&
-    process.env.DISABLE_SCHEDULER !== 'true' &&
-    process.env.DISCOVERY_ENABLED !== 'false'
-  );
-}
-
 export function getDiscoveryScheduleState(): DiscoveryOverview['scheduler'] {
-  let nextRunAt: string | null = null;
-  if (discoveryTask && process.env.DISABLE_SCHEDULER !== 'true') {
-    try {
-      const next = discoveryTask.getNextRun();
-      nextRunAt = next ? next.toISOString() : null;
-    } catch {
-      nextRunAt = null;
-    }
-  }
+  const values = [...tasks.values()]
+    .filter((task) => task.discovery)
+    .map(nextRunOf)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const discoveryTasks = [...tasks.values()].some((task) => task.discovery);
   return {
-    enabled: isDiscoveryScheduleEnabled(),
-    nextRunAt,
+    enabled: discoveryTasks && !schedulerDisabled() && discoveryEnabled(),
+    nextRunAt: values[0] ?? null,
     timezone: discoveryTimezone,
     cron: discoveryCron,
   };
 }
 
-function startSyncSchedule(): void {
-  if (getSetting('sync_enabled', 'true') !== 'true') return;
-  const expression = getSetting('sync_cron', process.env.SYNC_CRON || '0 */6 * * *');
-  if (!cron.validate(expression)) {
-    console.warn(`[scheduler] invalid cron expression: ${expression}`);
+function registerTask(row: TaskRow): void {
+  if (!cron.validate(row.schedule)) {
+    console.warn(`[scheduler] invalid cron expression for ${row.task_key}: ${row.schedule}`);
+    updateTaskNextRun(row.id, null);
     return;
   }
-
-  syncTask = cron.schedule(expression, async () => {
-    if (running) {
-      console.warn('[scheduler] previous collection still running, skip this tick');
-      return;
-    }
-    running = true;
-    lastRunAt = new Date().toISOString();
-    try {
-      const result = await syncAllActive('schedule');
-      console.log(`[scheduler] sync complete: ${result.succeeded}/${result.total} succeeded`);
-    } catch (error) {
-      console.error('[scheduler] sync failed:', error);
-    } finally {
-      running = false;
-      lastRunAt = new Date().toISOString();
-    }
-  });
-  console.log(`[scheduler] enabled with "${expression}"`);
-}
-
-function startDiscoverySchedule(): void {
-  if (process.env.DISCOVERY_ENABLED === 'false') {
-    console.log('[discovery-scheduler] disabled by DISCOVERY_ENABLED=false');
-    return;
-  }
-  if (!cron.validate(discoveryCron)) {
-    console.warn(`[discovery-scheduler] invalid cron expression: ${discoveryCron}`);
-    return;
-  }
-
-  discoveryTask = cron.schedule(
-    discoveryCron,
+  const discovery = row.source_type === 'discovery';
+  const scheduled = cron.schedule(
+    row.schedule,
     () => {
-      if (isDiscoveryRunning()) {
-        console.warn('[discovery-scheduler] previous discovery run still running, skip this tick');
+      const result = startTaskRun(row.id, 'scheduled');
+      if (!result.started) {
+        console.warn(`[scheduler] ${row.task_key} skipped: ${result.reason}`);
         return;
       }
-      const result = startDiscoveryRun('schedule');
-      console.log(
-        result.started
-          ? '[discovery-scheduler] discovery run started'
-          : `[discovery-scheduler] skipped: ${result.reason}`,
-      );
+      if (discovery) lastDiscoveryRunAt = new Date().toISOString();
+      else lastSyncRunAt = new Date().toISOString();
+      const registered = tasks.get(row.id);
+      if (registered) updateTaskNextRun(row.id, nextRunOf(registered));
     },
-    { timezone: discoveryTimezone },
+    discovery ? { timezone: discoveryTimezone } : undefined,
   );
-  console.log(
-    `[discovery-scheduler] enabled with "${discoveryCron}" (${discoveryTimezone})`,
-  );
+  const registered: RegisteredTask = { cron: scheduled, row, discovery };
+  tasks.set(row.id, registered);
+  updateTaskNextRun(row.id, nextRunOf(registered));
+}
+
+function taskRows(): TaskRow[] {
+  return db
+    .prepare(
+      `SELECT t.id, t.task_key, t.name, t.schedule, t.enabled,
+              s.source_key, s.type AS source_type, s.enabled AS source_enabled
+       FROM collection_tasks t JOIN data_sources s ON s.id = t.source_id
+       ORDER BY t.name`,
+    )
+    .all() as TaskRow[];
+}
+
+function clearNextRuns(): void {
+  db.prepare('UPDATE collection_tasks SET next_run_at = NULL').run();
+}
+
+function startCollectionSchedules(): void {
+  if (schedulerDisabled()) {
+    clearNextRuns();
+    return;
+  }
+  const rows = taskRows();
+  for (const row of rows) {
+    if (!row.enabled || !row.source_enabled) {
+      updateTaskNextRun(row.id, null);
+      continue;
+    }
+    if (row.source_type === 'discovery') {
+      if (!discoveryEnabled()) {
+        updateTaskNextRun(row.id, null);
+        continue;
+      }
+    } else if (!syncEnabled()) {
+      updateTaskNextRun(row.id, null);
+      continue;
+    }
+    registerTask(row);
+  }
+  for (const task of tasks.values()) {
+    console.log(
+      `[scheduler] ${task.row.task_key} enabled with "${task.row.schedule}"${
+        task.discovery ? ` (${discoveryTimezone})` : ''
+      }`,
+    );
+  }
 }
 
 /**
@@ -151,28 +203,30 @@ function startNotificationSchedule(): void {
 export function startScheduler(): void {
   stopScheduler();
 
-  // Any job left in "running" belongs to a previous process. Do this even when
-  // scheduled runs are disabled, otherwise the UI would report it as running forever.
-  if (!isDiscoveryRunning()) markInterruptedDiscoveryJobs();
+  // A reschedule (triggered by settings) must not mark an active run as
+  // interrupted. Only recover orphans when no collection is active.
+  if (!isCollectionRunning() && !isDiscoveryRunning()) {
+    const recovered = recoverInterruptedRuns();
+    if (recovered > 0) {
+      console.warn(`[scheduler] marked ${recovered} interrupted collection run(s)`);
+    }
+    refreshStaleAlerts();
+  }
 
   startNotificationSchedule();
-  if (process.env.DISABLE_SCHEDULER === 'true') return;
-
-  startSyncSchedule();
-  startDiscoverySchedule();
+  if (schedulerDisabled()) {
+    clearNextRuns();
+    return;
+  }
+  startCollectionSchedules();
 }
 
 export function stopScheduler(): void {
-  if (syncTask) {
-    syncTask.stop();
-    syncTask.destroy();
-    syncTask = null;
+  for (const task of tasks.values()) {
+    task.cron.stop();
+    task.cron.destroy();
   }
-  if (discoveryTask) {
-    discoveryTask.stop();
-    discoveryTask.destroy();
-    discoveryTask = null;
-  }
+  tasks.clear();
   if (notificationTask) {
     notificationTask.stop();
     notificationTask.destroy();

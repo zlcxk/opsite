@@ -2,15 +2,19 @@ import { Router } from 'express';
 import cron from 'node-cron';
 import { z } from 'zod';
 import type {
+  CollectionRunStatus,
+  DataSourceType,
   DeliveryStatus,
   FollowTargetType,
   LifecycleFeedItem,
   NotificationRuleType,
   NotificationSeverity,
+  OperationIssueKind,
   RadarKind,
   RadarRecordType,
   RadarStatus,
   ReleaseFeedItem,
+  SourceHealthStatus,
   SourceType,
   SubscriptionRule,
 } from '../shared/types.js';
@@ -53,9 +57,34 @@ import {
 import { listJobs, syncAllActive, syncSoftware } from './services/sync.js';
 import {
   getDiscoveryScheduleState,
+  getNextCollectionAt,
   getSchedulerState,
   rescheduleScheduler,
 } from './services/scheduler.js';
+import {
+  checkSource,
+  getFreshness,
+  getIssues,
+  getOperationsOverview,
+  getRunDetail,
+  getSourceDetail,
+  getSourceRuns,
+  getTaskDetail,
+  getTaskRuns,
+  OperationsRequestError,
+  retryRun,
+  startTaskRun,
+  updateSource,
+  updateTask,
+} from './services/operations.js';
+import {
+  applyGlobalSyncSchedule,
+  getRun,
+  listDataSources,
+  listTasks,
+  sourceSummary,
+  listRuns,
+} from './services/operations-store.js';
 import {
   clearFollowRules,
   followTarget,
@@ -248,6 +277,12 @@ const notificationRuleTypes = [
   'advisory_update',
   'project_update',
   'discovery',
+  'source_anomaly',
+  'rate_limit',
+  'task_failure',
+  'task_timeout',
+  'data_stale',
+  'task_recovered',
 ] as const;
 
 const followSchema = z.object({
@@ -292,6 +327,37 @@ const testEmailSchema = z.object({
     .refine((value) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value), { message: '收件邮箱格式不合法' })
     .optional(),
 });
+
+const sourcePatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    freshnessEnabled: z.boolean().optional(),
+    freshnessInterval: z.number().int().min(1).max(8760).optional(),
+    freshnessGracePeriod: z.number().int().min(0).max(8760).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: '至少提供一个可更新字段' });
+
+const taskPatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    schedule: z.string().trim().min(1).max(120).optional(),
+    timeoutSeconds: z.number().int().min(10).max(3600).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: '至少提供一个可更新字段' });
+
+function queryInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function sendOperationsError(res: any, error: unknown): boolean {
+  if (error instanceof OperationsRequestError) {
+    res.status(error.status).json({ error: error.message });
+    return true;
+  }
+  return false;
+}
 
 const notificationReadSchema = z.object({
   read: z.boolean(),
@@ -912,7 +978,13 @@ router.patch('/settings', (req, res) => {
     res.status(400).json({ error: 'cron 表达式不合法' });
     return;
   }
+  const previousCron = getPublicSettings().syncCron;
   updateSettings(body);
+  // Only a real change to the global collection interval rewrites the tasks
+  // that still follow it; per-task custom schedules are left untouched.
+  if (body.syncCron !== undefined && body.syncCron !== previousCron) {
+    applyGlobalSyncSchedule(body.syncCron);
+  }
   rescheduleScheduler();
   res.json({ ok: true, settings: { ...getPublicSettings(), scheduler: getSchedulerState() } });
 });
@@ -1092,6 +1164,242 @@ router.patch('/notifications/:id', (req, res) => {
     return;
   }
   res.json({ ok: true });
+});
+
+router.get('/operations/overview', (_req, res) => {
+  const scheduler = getSchedulerState();
+  res.json(
+    getOperationsOverview({
+      enabled: scheduler.enabled,
+      nextRunAt: getNextCollectionAt(),
+    }),
+  );
+});
+
+router.get('/operations/issues', (req, res) => {
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : undefined;
+  const kinds: OperationIssueKind[] = [
+    'source_anomaly',
+    'rate_limit',
+    'task_failure',
+    'task_timeout',
+    'data_stale',
+    'scheduler',
+  ];
+  if (kind && !kinds.includes(kind as OperationIssueKind)) {
+    res.status(400).json({ error: '问题类型不合法' });
+    return;
+  }
+  res.json(getIssues(kind as OperationIssueKind | undefined));
+});
+
+router.get('/operations/freshness', (_req, res) => {
+  res.json(getFreshness());
+});
+
+router.get('/sources', (req, res) => {
+  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const types: DataSourceType[] = ['lifecycle', 'release', 'security', 'discovery'];
+  const statuses: SourceHealthStatus[] = ['ok', 'error', 'rate_limited', 'unknown', 'disabled'];
+  if (type && !types.includes(type as DataSourceType)) {
+    res.status(400).json({ error: '数据源类型不合法' });
+    return;
+  }
+  if (status && !statuses.includes(status as SourceHealthStatus)) {
+    res.status(400).json({ error: '数据源状态不合法' });
+    return;
+  }
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : undefined;
+  res.json({
+    items: listDataSources({
+      type: type as DataSourceType | undefined,
+      status: status as SourceHealthStatus | undefined,
+      q,
+    }),
+    summary: sourceSummary(),
+  });
+});
+
+router.get('/sources/:id/runs', (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const statuses: CollectionRunStatus[] = ['running', 'success', 'failed', 'timeout'];
+  if (status && !statuses.includes(status as CollectionRunStatus)) {
+    res.status(400).json({ error: '执行状态不合法' });
+    return;
+  }
+  try {
+    const result = getSourceRuns(req.params.id, {
+      limit: queryInteger(req.query.limit, 20, 1, 100),
+      offset: queryInteger(req.query.offset, 0, 0, 1_000_000),
+      status: status as CollectionRunStatus | undefined,
+    });
+    res.json({ ...result, limit: queryInteger(req.query.limit, 20, 1, 100), offset: queryInteger(req.query.offset, 0, 0, 1_000_000) });
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.get('/sources/:id/health', (req, res) => {
+  try {
+    const detail = getSourceDetail(req.params.id);
+    res.json({ source: detail.source, checks: detail.checks, quotas: detail.quotas });
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.get('/sources/:id', (req, res) => {
+  try {
+    res.json(getSourceDetail(req.params.id));
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.post('/sources/:id/check', asyncRoute(async (req, res) => {
+  try {
+    res.json(await checkSource(req.params.id));
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+}));
+
+router.post('/sources/:id/collect', (req, res) => {
+  try {
+    const detail = getSourceDetail(req.params.id);
+    const task = detail.tasks[0];
+    if (!task) {
+      res.status(404).json({ error: '该数据源没有关联的采集任务' });
+      return;
+    }
+    const result = startTaskRun(task.id, 'manual');
+    if (!result.started) {
+      res.status(409).json({ error: result.reason ?? '无法启动采集' });
+      return;
+    }
+    res.status(202).json({ run: result.run });
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.patch('/sources/:id', (req, res) => {
+  const body = parseBody(sourcePatchSchema, req.body, res);
+  if (!body) return;
+  try {
+    const source = updateSource(req.params.id, body);
+    rescheduleScheduler();
+    res.json({ source });
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.get('/collection-tasks', (_req, res) => {
+  res.json({ items: listTasks(), schedulerEnabled: getSchedulerState().enabled });
+});
+
+router.get('/collection-tasks/:id/runs', (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const statuses: CollectionRunStatus[] = ['running', 'success', 'failed', 'timeout'];
+  if (status && !statuses.includes(status as CollectionRunStatus)) {
+    res.status(400).json({ error: '执行状态不合法' });
+    return;
+  }
+  try {
+    const limit = queryInteger(req.query.limit, 20, 1, 100);
+    const offset = queryInteger(req.query.offset, 0, 0, 1_000_000);
+    res.json({
+      ...getTaskRuns(req.params.id, {
+        limit,
+        offset,
+        status: status as CollectionRunStatus | undefined,
+      }),
+      limit,
+      offset,
+    });
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.get('/collection-tasks/:id', (req, res) => {
+  try {
+    res.json(getTaskDetail(req.params.id));
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.post('/collection-tasks/:id/run', (req, res) => {
+  const result = startTaskRun(req.params.id, 'manual');
+  if (!result.started) {
+    res.status(409).json({ error: result.reason ?? '无法启动采集' });
+    return;
+  }
+  res.status(202).json({ run: result.run });
+});
+
+router.patch('/collection-tasks/:id', (req, res) => {
+  const body = parseBody(taskPatchSchema, req.body, res);
+  if (!body) return;
+  if (body.schedule && !cron.validate(body.schedule)) {
+    res.status(400).json({ error: 'cron 表达式不合法' });
+    return;
+  }
+  try {
+    const task = updateTask(req.params.id, body);
+    rescheduleScheduler();
+    res.json({ task });
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.get('/collection-runs', (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const statuses: CollectionRunStatus[] = ['running', 'success', 'failed', 'timeout'];
+  if (status && !statuses.includes(status as CollectionRunStatus)) {
+    res.status(400).json({ error: '执行状态不合法' });
+    return;
+  }
+  const limit = queryInteger(req.query.limit, 20, 1, 100);
+  const offset = queryInteger(req.query.offset, 0, 0, 1_000_000);
+  const taskId = typeof req.query.taskId === 'string' ? req.query.taskId.slice(0, 100) : undefined;
+  const sourceId = typeof req.query.sourceId === 'string' ? req.query.sourceId.slice(0, 100) : undefined;
+  res.json({
+    ...listRuns({
+      taskId,
+      sourceId,
+      status: status as CollectionRunStatus | undefined,
+      limit,
+      offset,
+    }),
+    limit,
+    offset,
+  });
+});
+
+router.get('/collection-runs/:id', (req, res) => {
+  try {
+    res.json(getRunDetail(req.params.id));
+  } catch (error) {
+    if (!sendOperationsError(res, error)) throw error;
+  }
+});
+
+router.post('/collection-runs/:id/retry', (req, res) => {
+  if (!getRun(req.params.id)) {
+    res.status(404).json({ error: '执行记录不存在' });
+    return;
+  }
+  const result = retryRun(req.params.id);
+  if (!result.started) {
+    res.status(409).json({ error: result.reason ?? '无法重试' });
+    return;
+  }
+  res.status(202).json({ run: result.run });
 });
 
 router.get('/backup', asyncRoute(async (_req, res) => {

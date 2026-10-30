@@ -271,7 +271,10 @@ describe('discovery storage and collection', () => {
 
     const githubJob = result.jobs.find((job) => job.sourceType === 'github');
     const cncfJob = result.jobs.find((job) => job.sourceType === 'cncf');
-    expect(githubJob?.itemsUpdated).toBe(1);
+    // Identical upstream fields must not be reported as an update; the data
+    // change timestamp is only refreshed when the content actually changes.
+    expect(githubJob?.itemsUpdated).toBe(0);
+    expect(githubJob?.itemsSkipped).toBe(1);
     expect(cncfJob?.itemsDuplicate).toBe(1);
   });
 

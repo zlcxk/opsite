@@ -140,9 +140,11 @@ export function Settings() {
         title="设置"
         subtitle="所有配置保存在本机 SQLite。外部凭据只从服务端环境变量读取，不会下发给前端。"
         actions={
-          <button className="btn btn-primary" onClick={() => void save()} disabled={!dirty || saving}>
-            <Save size={13} /> {saving ? '保存中…' : dirty ? '保存设置' : '已保存'}
-          </button>
+          section === 'about' ? undefined : (
+            <button className="btn btn-primary" onClick={() => void save()} disabled={!dirty || saving}>
+              <Save size={13} /> {saving ? '保存中…' : dirty ? '保存设置' : '已保存'}
+            </button>
+          )
         }
       />
 
@@ -202,7 +204,7 @@ export function Settings() {
                 <div className="setting-row">
                   <div className="setting-row-label">
                     <strong>采集频率</strong>
-                    <p>使用标准 cron 表达式。保存后调度器会立即重新加载。</p>
+                    <p>使用标准 cron 表达式。保存后调度器会立即重新加载；已单独设置 cron 的采集任务不会被覆盖。</p>
                   </div>
                   <div className="setting-row-control w-[300px]">
                     <input
@@ -460,14 +462,6 @@ export function Settings() {
             </>
           )}
 
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <span className="text-[0.6875rem] text-[var(--muted-2)]">
-              {dirty ? '有未保存的更改' : '设置已与本地数据库同步'}
-            </span>
-            <button className="btn btn-primary" onClick={() => void save()} disabled={!dirty || saving}>
-              <Save size={13} /> {saving ? '保存中…' : '保存设置'}
-            </button>
-          </div>
         </div>
       </div>
     </div>

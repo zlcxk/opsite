@@ -4,6 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_DISCOVERY_RULES, DEFAULT_DISCOVERY_SOURCES } from './services/discovery-config.js';
 import { DEFAULT_GLOBAL_RULES } from './services/notification-config.js';
+import {
+  COLLECTION_TASK_DEFINITIONS,
+  DATA_SOURCE_DEFINITIONS,
+} from './services/operations-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -275,6 +279,10 @@ CREATE TABLE IF NOT EXISTS sync_job (
   finished_at TEXT,
   items_found INTEGER NOT NULL DEFAULT 0,
   items_new INTEGER NOT NULL DEFAULT 0,
+  items_updated INTEGER NOT NULL DEFAULT 0,
+  items_skipped INTEGER NOT NULL DEFAULT 0,
+  data_changed INTEGER NOT NULL DEFAULT 0,
+  run_id TEXT,
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_started ON sync_job(started_at DESC);
@@ -411,11 +419,118 @@ CREATE TABLE IF NOT EXISTS discovery_job (
   items_found INTEGER NOT NULL DEFAULT 0,
   items_new INTEGER NOT NULL DEFAULT 0,
   items_updated INTEGER NOT NULL DEFAULT 0,
+  items_skipped INTEGER NOT NULL DEFAULT 0,
   items_duplicate INTEGER NOT NULL DEFAULT 0,
+  run_id TEXT,
   error_summary TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_discovery_job_started ON discovery_job(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_discovery_job_source ON discovery_job(source_type, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS data_sources (
+  id TEXT PRIMARY KEY,
+  source_key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  description TEXT,
+  official_url TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  health_status TEXT NOT NULL DEFAULT 'unknown',
+  last_check_at TEXT,
+  last_success_at TEXT,
+  last_failure_at TEXT,
+  last_data_updated_at TEXT,
+  freshness_interval INTEGER NOT NULL DEFAULT 24,
+  freshness_grace_period INTEGER NOT NULL DEFAULT 12,
+  freshness_enabled INTEGER NOT NULL DEFAULT 1,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  last_error_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_data_source_type ON data_sources(type, name);
+CREATE INDEX IF NOT EXISTS idx_data_source_health ON data_sources(health_status);
+
+CREATE TABLE IF NOT EXISTS collection_tasks (
+  id TEXT PRIMARY KEY,
+  task_key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  source_id TEXT NOT NULL REFERENCES data_sources(id),
+  description TEXT,
+  schedule TEXT NOT NULL,
+  schedule_custom INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  timeout_seconds INTEGER NOT NULL DEFAULT 120,
+  last_run_at TEXT,
+  next_run_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_collection_task_source ON collection_tasks(source_id);
+
+CREATE TABLE IF NOT EXISTS collection_runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES collection_tasks(id),
+  source_id TEXT NOT NULL REFERENCES data_sources(id),
+  trigger_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  duration_ms INTEGER,
+  fetched_count INTEGER NOT NULL DEFAULT 0,
+  created_count INTEGER NOT NULL DEFAULT 0,
+  updated_count INTEGER NOT NULL DEFAULT 0,
+  skipped_count INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_collection_run_task ON collection_runs(task_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collection_run_source ON collection_runs(source_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collection_run_status ON collection_runs(status, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS source_health_checks (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES data_sources(id),
+  status TEXT NOT NULL,
+  response_time_ms INTEGER,
+  http_status INTEGER,
+  error_message TEXT,
+  checked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health_checks(source_id, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS source_quota_records (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES data_sources(id),
+  quota_limit INTEGER,
+  quota_remaining INTEGER,
+  quota_used INTEGER,
+  reset_at TEXT,
+  rate_limited INTEGER NOT NULL DEFAULT 0,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_quota_source ON source_quota_records(source_id, recorded_at DESC);
+
+CREATE TABLE IF NOT EXISTS operation_alerts (
+  id TEXT PRIMARY KEY,
+  alert_key TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  source_id TEXT REFERENCES data_sources(id),
+  task_id TEXT REFERENCES collection_tasks(id),
+  severity TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  cycle INTEGER NOT NULL DEFAULT 1,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operation_alert_status ON operation_alerts(status, last_seen_at DESC);
 `);
 
 // Forward-compatible migration for databases created by earlier releases.
@@ -431,12 +546,23 @@ ensureColumn('radar_item', 'status', "TEXT NOT NULL DEFAULT 'pending'");
 ensureColumn('radar_item', 'updated_at', 'TEXT');
 ensureColumn('radar_item', 'last_evaluated_at', 'TEXT');
 ensureColumn('radar_item', 'archived_at', 'TEXT');
+ensureColumn('sync_job', 'run_id', 'TEXT');
+ensureColumn('sync_job', 'items_updated', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('sync_job', 'items_skipped', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('sync_job', 'data_changed', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('discovery_job', 'run_id', 'TEXT');
+ensureColumn('discovery_job', 'items_skipped', 'INTEGER NOT NULL DEFAULT 0');
+// Tasks seeded from the global sync schedule keep following it until the user
+// edits that task's cron directly.
+ensureColumn('collection_tasks', 'schedule_custom', 'INTEGER NOT NULL DEFAULT 0');
 db.prepare("UPDATE radar_item SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''").run();
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_radar_archived ON radar_item(archived_at, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_radar_status ON radar_item(status);
 CREATE INDEX IF NOT EXISTS idx_radar_record_item ON radar_record(radar_item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_job_run ON sync_job(run_id);
+CREATE INDEX IF NOT EXISTS idx_discovery_job_run ON discovery_job(run_id);
 `);
 
 const seedTimestamp = new Date().toISOString();
@@ -478,6 +604,63 @@ for (const rule of DEFAULT_GLOBAL_RULES) {
     rule.inApp ? 1 : 0,
     rule.email ? 1 : 0,
     rule.minSeverity,
+    seedTimestamp,
+  );
+}
+
+// P4 source and task registry. Existing choices are never overwritten.
+const syncSchedule = getSetting('sync_cron', process.env.SYNC_CRON || '0 */6 * * *');
+const discoverySchedule = process.env.DISCOVERY_CRON || '0 9 * * *';
+for (const source of DATA_SOURCE_DEFINITIONS) {
+  db.prepare(
+    `INSERT INTO data_sources
+      (id, source_key, name, type, description, official_url, enabled, health_status,
+       freshness_interval, freshness_grace_period, freshness_enabled, consecutive_failures,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+     ON CONFLICT(source_key) DO NOTHING`,
+  ).run(
+    `source_${source.key}`,
+    source.key,
+    source.name,
+    source.type,
+    source.description,
+    source.officialUrl,
+    source.enabled ? 1 : 0,
+    source.enabled ? 'unknown' : 'disabled',
+    source.freshnessInterval,
+    source.freshnessGracePeriod,
+    source.freshnessEnabled ? 1 : 0,
+    seedTimestamp,
+    seedTimestamp,
+  );
+}
+// Older P4 databases only knew "unknown" for a disabled source. Keep the
+// displayed health status aligned with the enabled flag so filters and stats
+// do not count suspended sources as healthy or abnormal.
+db.prepare(
+  `UPDATE data_sources SET health_status = 'disabled'
+   WHERE enabled = 0 AND health_status != 'disabled'`,
+).run();
+for (const task of COLLECTION_TASK_DEFINITIONS) {
+  const source = DATA_SOURCE_DEFINITIONS.find((item) => item.key === task.sourceKey);
+  const schedule = source?.group === 'discovery' ? discoverySchedule : syncSchedule;
+  db.prepare(
+    `INSERT INTO collection_tasks
+      (id, task_key, name, source_id, description, schedule, enabled, timeout_seconds,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(task_key) DO NOTHING`,
+  ).run(
+    `task_${task.key}`,
+    task.key,
+    task.name,
+    `source_${task.sourceKey}`,
+    task.description,
+    schedule,
+    task.enabled ? 1 : 0,
+    task.timeoutSeconds,
+    seedTimestamp,
     seedTimestamp,
   );
 }

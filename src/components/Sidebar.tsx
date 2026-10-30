@@ -5,8 +5,11 @@ import {
   Boxes,
   ChevronRight,
   Compass,
+  Database,
+  Gauge,
   GitBranch,
   LayoutDashboard,
+  ListChecks,
   NotebookPen,
   Radar,
   Rss,
@@ -29,6 +32,12 @@ const mainNav = [
   { to: '/versions', label: '版本与生命周期', icon: GitBranch },
   { to: '/events', label: '情报事件', icon: Activity, count: 'events' as const },
   { to: '/notifications', label: '通知中心', icon: Bell, count: 'notifications' as const },
+];
+
+const operationsNav = [
+  { to: '/operations', label: '运行概览', icon: Gauge, end: true },
+  { to: '/operations/sources', label: '数据源管理', icon: Database },
+  { to: '/operations/tasks', label: '采集任务', icon: ListChecks },
 ];
 
 const exploreNav = [
@@ -100,6 +109,25 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 {count !== null && count > 0 && (
                   <span className={`nav-count ${item.count === 'pending' && count > 0 ? 'alert' : ''}`}>{count}</span>
                 )}
+              </NavLink>
+            );
+          })}
+        </div>
+
+        <div className="nav-group">
+          <div className="nav-group-label">运行 / Operations</div>
+          {operationsNav.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
+                onClick={onClose}
+              >
+                <Icon size={16} strokeWidth={1.8} />
+                <span>{item.label}</span>
               </NavLink>
             );
           })}

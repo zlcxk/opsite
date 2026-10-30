@@ -54,4 +54,6 @@ export interface AdapterResult {
   advisories?: RawAdvisory[];
   itemCount: number;
   note?: string;
+  /** True only when the upstream payload differed from what was already stored. */
+  dataChanged?: boolean;
 }

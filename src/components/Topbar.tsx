@@ -22,6 +22,12 @@ const pageNames: Array<[RegExp, string]> = [
   [/^\/discover\/[^/]+$/, '候选详情'],
   [/^\/discover$/, '技术发现'],
   [/^\/knowledge$/, '我的知识库'],
+  [/^\/operations\/sources\/[^/]+$/, '数据源详情'],
+  [/^\/operations\/sources$/, '数据源管理'],
+  [/^\/operations\/tasks\/[^/]+$/, '采集任务详情'],
+  [/^\/operations\/tasks$/, '采集任务'],
+  [/^\/operations\/runs\/[^/]+$/, '执行详情'],
+  [/^\/operations$/, '运行中心'],
   [/^\/settings$/, '设置'],
   [/^\/$/, '首页'],
 ];

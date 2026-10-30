@@ -81,22 +81,47 @@ async function runAdapter(type: SourceType, context: AdapterContext): Promise<Ad
   }
 }
 
-function insertJob(softwareId: string, sourceId: string, sourceType: SourceType, trigger: string): string {
+function insertJob(
+  softwareId: string,
+  sourceId: string,
+  sourceType: SourceType,
+  trigger: string,
+  runId: string | null,
+): string {
   const id = crypto.randomUUID();
   db.prepare(
-    `INSERT INTO sync_job (id, software_id, source_id, source_type, status, trigger, started_at)
-     VALUES (?, ?, ?, ?, 'running', ?, ?)`,
-  ).run(id, softwareId, sourceId, sourceType, trigger, nowIso());
+    `INSERT INTO sync_job (id, software_id, source_id, source_type, status, trigger, started_at, run_id)
+     VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
+  ).run(id, softwareId, sourceId, sourceType, trigger, nowIso(), runId);
   return id;
 }
 
 function finishJob(
   id: string,
-  result: { status: 'success' | 'error'; itemsFound: number; itemsNew: number; error?: string | null },
+  result: {
+    status: 'success' | 'error';
+    itemsFound: number;
+    itemsNew: number;
+    itemsUpdated?: number;
+    itemsSkipped?: number;
+    dataChanged?: boolean;
+    error?: string | null;
+  },
 ): void {
   db.prepare(
-    `UPDATE sync_job SET status = ?, finished_at = ?, items_found = ?, items_new = ?, error = ? WHERE id = ?`,
-  ).run(result.status, nowIso(), result.itemsFound, result.itemsNew, result.error ?? null, id);
+    `UPDATE sync_job SET status = ?, finished_at = ?, items_found = ?, items_new = ?,
+       items_updated = ?, items_skipped = ?, data_changed = ?, error = ? WHERE id = ?`,
+  ).run(
+    result.status,
+    nowIso(),
+    result.itemsFound,
+    result.itemsNew,
+    result.itemsUpdated ?? 0,
+    result.itemsSkipped ?? 0,
+    result.dataChanged ? 1 : 0,
+    result.error ?? null,
+    id,
+  );
 }
 
 function getJob(id: string): SyncJob | null {
@@ -115,11 +140,13 @@ function handleLifecycle(
   source: SourceRow,
   rows: RawLifecycle[],
   initial: boolean,
-): { createdEvents: number; created: number } {
+): { createdEvents: number; created: number; updated: number; changed: boolean } {
   let createdEvents = 0;
   let created = 0;
+  let updated = 0;
   const findExisting = db.prepare(
-    'SELECT support_status, eol_date FROM lifecycle_record WHERE software_id = ? AND source_id = ? AND cycle = ?',
+    `SELECT release_date, latest_version, latest_release_date, eol_date, support_status, source_url
+     FROM lifecycle_record WHERE software_id = ? AND source_id = ? AND cycle = ?`,
   );
   const upsert = db.prepare(
     `INSERT INTO lifecycle_record
@@ -138,7 +165,14 @@ function handleLifecycle(
 
   for (const row of rows) {
     const previous = findExisting.get(software.id, source.id, row.cycle) as
-      | { support_status: string; eol_date: string | null }
+      | {
+          release_date: string | null;
+          latest_version: string | null;
+          latest_release_date: string | null;
+          eol_date: string | null;
+          support_status: string;
+          source_url: string | null;
+        }
       | undefined;
     upsert.run(
       crypto.randomUUID(),
@@ -156,7 +190,18 @@ function handleLifecycle(
       JSON.stringify(row.raw),
     );
 
-    if (!previous) created += 1;
+    if (!previous) {
+      created += 1;
+    } else if (
+      previous.release_date !== row.releaseDate ||
+      previous.latest_version !== row.latestVersion ||
+      previous.latest_release_date !== row.latestReleaseDate ||
+      previous.eol_date !== row.eolDate ||
+      previous.support_status !== row.supportStatus ||
+      previous.source_url !== row.sourceUrl
+    ) {
+      updated += 1;
+    }
     const isCurrent = currentCycle?.cycle === row.cycle;
     const becameRisky =
       isCurrent &&
@@ -181,7 +226,7 @@ function handleLifecycle(
     }
   }
 
-  return { createdEvents, created };
+  return { createdEvents, created, updated, changed: created + updated > 0 };
 }
 
 function handleReleases(
@@ -189,11 +234,13 @@ function handleReleases(
   source: SourceRow,
   rows: RawRelease[],
   initial: boolean,
-): { createdEvents: number; created: number } {
+): { createdEvents: number; created: number; updated: number; changed: boolean } {
   let createdEvents = 0;
   let created = 0;
+  let updated = 0;
   const existing = db.prepare(
-    'SELECT id FROM release_record WHERE software_id = ? AND source_id = ? AND external_id = ?',
+    `SELECT version, channel, title, notes, url, published_at FROM release_record
+     WHERE software_id = ? AND source_id = ? AND external_id = ?`,
   );
   const upsert = db.prepare(
     `INSERT INTO release_record
@@ -210,7 +257,16 @@ function handleReleases(
   const timestamp = nowIso();
 
   for (const row of rows) {
-    const previous = existing.get(software.id, source.id, row.externalId);
+    const previous = existing.get(software.id, source.id, row.externalId) as
+      | {
+          version: string;
+          channel: string;
+          title: string | null;
+          notes: string | null;
+          url: string | null;
+          published_at: string | null;
+        }
+      | undefined;
     upsert.run(
       crypto.randomUUID(),
       software.id,
@@ -245,9 +301,18 @@ function handleReleases(
         });
         createdEvents += 1;
       }
+    } else if (
+      previous.version !== row.version ||
+      previous.channel !== row.channel ||
+      previous.title !== row.title ||
+      previous.notes !== row.notes ||
+      previous.url !== row.url ||
+      previous.published_at !== row.publishedAt
+    ) {
+      updated += 1;
     }
   }
-  return { createdEvents, created };
+  return { createdEvents, created, updated, changed: created + updated > 0 };
 }
 
 function handleAdvisories(
@@ -256,14 +321,16 @@ function handleAdvisories(
   rows: RawAdvisory[],
   initial: boolean,
   alreadyCreated: number,
-): { createdEvents: number; created: number } {
+): { createdEvents: number; created: number; updated: number; changed: boolean } {
   let createdEvents = 0;
   let created = 0;
+  let updated = 0;
   const sorted = [...rows].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
   const initialCap = 30;
 
   for (const row of sorted) {
     const result = upsertAdvisory(software.id, source.id, row);
+    if (result.changed && !result.created) updated += 1;
     if (!result.created) continue;
     created += 1;
     if (initial && alreadyCreated + createdEvents >= initialCap) continue;
@@ -283,7 +350,7 @@ function handleAdvisories(
     });
     createdEvents += 1;
   }
-  return { createdEvents, created };
+  return { createdEvents, created, updated, changed: created + updated > 0 };
 }
 
 function severityLabel(row: Pick<RawAdvisory, 'severity' | 'score'>): string {
@@ -391,7 +458,12 @@ function refreshHighestAffectedEventPriority(softwareId: string): void {
 
 export async function syncSoftware(
   softwareId: string,
-  options: { trigger: 'manual' | 'schedule' | 'initial'; sourceIds?: string[] } = { trigger: 'manual' },
+  options: {
+    trigger: 'manual' | 'schedule' | 'initial';
+    sourceIds?: string[];
+    sourceTypes?: SourceType[];
+    runId?: string;
+  } = { trigger: 'manual' },
 ): Promise<SyncRunResult> {
   if (locks.has(softwareId)) {
     return { ok: false, busy: true, jobs: [], error: '该软件正在同步中' };
@@ -407,6 +479,9 @@ export async function syncSoftware(
   if (options.sourceIds?.length) {
     sources = sources.filter((source) => options.sourceIds?.includes(source.id));
   }
+  if (options.sourceTypes?.length) {
+    sources = sources.filter((source) => options.sourceTypes?.includes(source.type));
+  }
   if (!sources.length) return { ok: false, jobs: [], error: '没有启用的数据源' };
 
   locks.add(softwareId);
@@ -421,7 +496,7 @@ export async function syncSoftware(
     let advisoryEventsCreated = 0;
 
     for (const source of sources) {
-      const jobId = insertJob(softwareId, source.id, source.type, options.trigger);
+      const jobId = insertJob(softwareId, source.id, source.type, options.trigger, options.runId ?? null);
       const initial = !source.last_sync_at;
       const context: AdapterContext = {
         sourceId: source.id,
@@ -432,16 +507,25 @@ export async function syncSoftware(
       try {
         const result = await runAdapter(source.type, context);
         let itemsNew = 0;
+        let itemsUpdated = 0;
+        let processed = 0;
+        let dataChanged = Boolean(result.dataChanged);
         let eventCount = 0;
 
         if (result.lifecycle?.length) {
           const lifecycleResult = handleLifecycle(software, source, result.lifecycle, initial);
           itemsNew += lifecycleResult.created;
+          itemsUpdated += lifecycleResult.updated;
+          processed += result.lifecycle.length;
+          dataChanged ||= lifecycleResult.changed;
           eventCount += lifecycleResult.createdEvents;
         }
         if (result.releases?.length) {
           const releaseResult = handleReleases(software, source, result.releases, initial);
           itemsNew += releaseResult.created;
+          itemsUpdated += releaseResult.updated;
+          processed += result.releases.length;
+          dataChanged ||= releaseResult.changed;
           eventCount += releaseResult.createdEvents;
         }
         if (result.advisories?.length) {
@@ -453,6 +537,9 @@ export async function syncSoftware(
             advisoryEventsCreated,
           );
           itemsNew += advisoryResult.created;
+          itemsUpdated += advisoryResult.updated;
+          processed += result.advisories.length;
+          dataChanged ||= advisoryResult.changed;
           eventCount += advisoryResult.createdEvents;
           advisoryEventsCreated += advisoryResult.createdEvents;
         }
@@ -461,6 +548,9 @@ export async function syncSoftware(
           status: 'success',
           itemsFound: result.itemCount,
           itemsNew,
+          itemsUpdated,
+          itemsSkipped: Math.max(0, processed - itemsNew - itemsUpdated),
+          dataChanged,
         });
         setSourceResult(source.id, { ok: true, itemCount: result.itemCount });
         anySuccess = true;

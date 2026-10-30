@@ -345,6 +345,10 @@ interface JobRow {
   finished_at: string | null;
   items_found: number;
   items_new: number;
+  items_updated?: number;
+  items_skipped?: number;
+  data_changed?: number;
+  run_id?: string | null;
   error: string | null;
 }
 
@@ -362,6 +366,10 @@ export function mapJob(row: JobRow): SyncJob {
     finishedAt: row.finished_at,
     itemsFound: row.items_found,
     itemsNew: row.items_new,
+    itemsUpdated: row.items_updated ?? 0,
+    itemsSkipped: row.items_skipped ?? 0,
+    dataChanged: Boolean(row.data_changed),
+    runId: row.run_id ?? null,
     error: row.error,
   };
 }

@@ -2,7 +2,7 @@
 
 单用户、本地优先的软件情报站。把关注软件的版本发布、生命周期、安全漏洞和 CISA KEV 实际利用信息收敛到一份软件清单里，首页只呈现需要处理的高信噪比信号。
 
-内置统一事件中心：同一信号按去重键合并为一条主事件，首次发现时间与上游发布时间分开保存，并可按软件、类型、优先级、处置状态、未读和时间范围筛选。P3 增加统一关注与通知：关注软件、雷达条目、发现候选或单条公告后，站内通知先落库，邮件由独立队列按实时或每日摘要发送。
+内置统一事件中心：同一信号按去重键合并为一条主事件，首次发现时间与上游发布时间分开保存，并可按软件、类型、优先级、处置状态、未读和时间范围筛选。P3 增加统一关注与通知：关注软件、雷达条目、发现候选或单条公告后，站内通知先落库，邮件由独立队列按实时或每日摘要发送。P4 增加运行中心：数据源注册表、采集任务与真实执行记录，健康状态和数据新鲜度分开计算。
 
 - 前端：React 19 + TypeScript + Vite + Tailwind CSS 4
 - 后端：Express 5 + better-sqlite3 + zod + node-cron + nodemailer
@@ -217,6 +217,63 @@ API 启动时会自动读取项目根目录的 `.env`（文件不存在则跳过
 
 `GITHUB_TOKEN` 只由服务端读取，不返回前端、不写入日志。页面展示的规则查询串即实际采集范围，不声称覆盖全部 GitHub。
 
+## 运行中心
+
+运行中心是一级页面，包含 **运行概览**、**数据源管理** 和 **采集任务** 三个入口，以及数据源、任务和执行记录的详情页。页面中的数字全部来自 SQLite 中的 `data_sources`、`collection_tasks`、`collection_runs`、`source_health_checks`、`source_quota_records` 和 `operation_alerts`，不使用模拟数据。
+
+### 注册的数据源
+
+服务启动时按当前代码中真实存在的适配器写入注册表；尚未接入 API 的 `upstream_advisory` 以停用状态展示。
+
+| 数据源 | 类型 | 健康检查 | 新鲜度窗口（间隔 + 宽限） |
+| --- | --- | --- | --- |
+| endoflife.date | 生命周期 | 请求一次已知产品的 API | 168h + 48h |
+| GitHub Releases | 版本发布 | `GET /rate_limit`，记录真实 core 配额 | 24h + 12h |
+| GitHub Advisory | 安全漏洞 | 同上 | 24h + 12h |
+| NVD CVE | 安全漏洞 | 请求 `resultsPerPage=1` | 24h + 12h |
+| CISA KEV | 安全漏洞 | 请求官方 KEV JSON | 24h + 12h |
+| upstream_advisory | 安全漏洞 | 不支持探测，显示“未知” | 不启用 |
+| GitHub 技术发现 | 技术发现 | `GET /rate_limit` | 24h + 12h |
+| CNCF Landscape | 技术发现 | GitHub Contents API（含配额响应头） | 168h + 48h |
+
+健康状态（`ok / error / rate_limited / unknown / disabled`）来自最近一次健康检查或采集结果，限流与普通采集异常分开记录。只有上游确实提供配额时才展示配额：GitHub 使用 `/rate_limit` 的真实 core 配额，NVD、CISA、endoflife 等不提供配额查询的来源显示“未提供配额信息”，不会补 0。
+
+### 数据新鲜度
+
+- `last_data_updated_at` 只在采集成功且数据内容实际发生变化时前移：新增记录、字段更新或新事件都算变化；返回内容与库中一致时只增加“跳过”计数，不刷新新鲜度。
+- 采集失败、超时、部分失败不会刷新该时间；停用数据源也不会清空历史。
+- 状态按 `fresh → expiring → expired` 计算，从未采到内容的来源为 `unknown`；`unknown` 不会被判定为异常。
+- 已有数据库升级到 P4 时不会伪造历史更新时间：旧记录没有保存“内容变化时间”，因此新鲜度保持 `unknown`，直到下一次真实内容变化。这是有意的保守处理。
+
+### 采集任务
+
+- 8 个任务与数据源一一对应，每个任务有独立 cron、启用状态和超时（按任务配置为 180–600 秒）。
+- 全局“采集间隔”只更新尚未单独修改过 cron 的任务；在任务详情保存过 cron 后，该任务保持自定义调度。暂停只停止后续定时触发，不影响已开始的执行，也不删除历史记录。
+- 同一时间只允许一个采集任务执行，重复触发返回 409。手动执行不修改定时规则，执行记录会保存触发来源（`schedule / manual / retry`）。
+- 执行超时会标记为 `timeout`；服务重启时遗留的 `running` 记录会被识别为中断并标记异常终止。失败或超时的执行可以手动重试，重试会创建新记录。
+- 失败、超时、限流和数据过期会生成带去重键的问题记录，恢复后自动关闭；同一问题再次出现会重新打开。P3 的通知规则可以订阅这些运行事件。
+
+### 运行中心 API
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/operations/overview` | 概览统计、调度器状态、数据源、最近执行和未恢复问题 |
+| `GET` | `/operations/issues?kind=` | 未恢复问题列表，可按类型筛选 |
+| `GET` | `/operations/freshness` | 各数据源新鲜度汇总 |
+| `GET` | `/sources?type=&status=&q=` | 数据源列表 |
+| `GET` / `PATCH` | `/sources/:id` | 数据源详情 / 更新启用、新鲜度窗口 |
+| `GET` | `/sources/:id/health` | 健康检查与配额历史 |
+| `GET` | `/sources/:id/runs?status=&limit=&offset=` | 数据源执行记录 |
+| `POST` | `/sources/:id/check` | 立即执行健康检查 |
+| `POST` | `/sources/:id/collect` | 立即触发该数据源的采集任务 |
+| `GET` | `/collection-tasks` | 任务列表 |
+| `GET` / `PATCH` | `/collection-tasks/:id` | 任务详情 / 更新启用、cron、超时 |
+| `GET` | `/collection-tasks/:id/runs?status=&limit=&offset=` | 任务执行历史 |
+| `POST` | `/collection-tasks/:id/run` | 手动执行（写入手动触发来源） |
+| `GET` | `/collection-runs?taskId=&sourceId=&status=&limit=&offset=` | 执行记录列表 |
+| `GET` | `/collection-runs/:id` | 执行详情与底层数据源作业明细 |
+| `POST` | `/collection-runs/:id/retry` | 重试失败或超时的执行 |
+
 ## 备份与恢复
 
 设置页“数据与备份”可以下载 SQLite 快照（`VACUUM INTO`，生成的副本位于 `data/backups/`）。
@@ -237,8 +294,9 @@ npm start
 ## 测试
 
 ```bash
-npm test          # 版本/范围/影响判断、EOL、雷达、技术发现，以及关注规则、通知去重、邮件队列、时区与退避
+npm test          # 版本/范围/影响判断、EOL、雷达、技术发现，关注规则、通知去重、邮件队列、时区与退避，以及运行中心
 npm run build     # TypeScript 类型检查 + 前端生产构建
+npm run build:server  # 服务端编译
 ```
 
 ## 当前边界
@@ -247,5 +305,7 @@ npm run build     # TypeScript 类型检查 + 前端生产构建
 - 邮件依赖用户自己的 SMTP 服务。Opsite 不内置邮件网关，也不会代为投递；未配置 SMTP 时站内通知照常工作，邮件记录会标记为已跳过。
 - 后台邮件队列依赖 API 进程常驻。服务停止期间的待发送邮件会保留，重启后继续尝试，不会立即补发全部历史通知。
 - 没有浏览器 Web Push、桌面通知或移动端推送；通知只在站内展示，邮件是唯一的外部提醒渠道。
-- 上游公告适配器（`upstream_advisory`）尚未接入具体厂商 API。
+- 上游公告适配器（`upstream_advisory`）尚未接入具体厂商 API，因此在运行中心保持停用。
 - 采集失败时保留上一次成功数据，并将数据源标记为异常/过期；首页会继续展示旧数据并提示来源问题。
+- 运行中心不提供任意 URL 导入或自定义请求；所有采集只能通过仓库内的固定适配器执行，避免 SSRF。数据源详情只允许调整启用状态和新鲜度窗口，不能修改适配器代码或上游地址。
+- 旧数据库升级后，运行中心的数据新鲜度在首次真实内容变化前显示为 `unknown`，不会用历史采集时间回填成“新鲜”。

@@ -14,6 +14,12 @@ export const NOTIFICATION_EVENT_TYPES: NotificationRuleType[] = [
   'new_release',
   'project_update',
   'discovery',
+  'source_anomaly',
+  'rate_limit',
+  'task_failure',
+  'task_timeout',
+  'data_stale',
+  'task_recovered',
 ];
 
 /**
@@ -29,6 +35,12 @@ export const DEFAULT_GLOBAL_RULES: SubscriptionRule[] = [
   { eventType: 'new_release', inApp: false, email: false, minSeverity: 'all' },
   { eventType: 'project_update', inApp: false, email: false, minSeverity: 'all' },
   { eventType: 'discovery', inApp: false, email: false, minSeverity: 'all' },
+  { eventType: 'source_anomaly', inApp: true, email: false, minSeverity: 'all' },
+  { eventType: 'rate_limit', inApp: true, email: false, minSeverity: 'all' },
+  { eventType: 'task_failure', inApp: true, email: false, minSeverity: 'all' },
+  { eventType: 'task_timeout', inApp: true, email: false, minSeverity: 'all' },
+  { eventType: 'data_stale', inApp: true, email: false, minSeverity: 'all' },
+  { eventType: 'task_recovered', inApp: true, email: false, minSeverity: 'all' },
 ];
 
 export function defaultRule(eventType: NotificationRuleType): SubscriptionRule {

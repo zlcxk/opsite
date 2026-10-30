@@ -12,6 +12,7 @@ import type {
   NotificationRuleType,
   NotificationSeverity,
   NotificationSummary,
+  NotificationTargetType,
   Priority,
   RadarItem,
   RadarRecord,
@@ -75,7 +76,7 @@ interface NotificationRow {
   severity: NotificationSeverity;
   title: string;
   body: string | null;
-  target_type: FollowTargetType;
+  target_type: NotificationTargetType;
   target_id: string;
   target_name: string;
   event_id: string | null;
@@ -594,7 +595,7 @@ interface InsertNotificationInput {
   severity: NotificationSeverity;
   title: string;
   body: string | null;
-  targetType: FollowTargetType;
+  targetType: NotificationTargetType;
   targetId: string;
   targetName: string;
   eventId: string | null;
@@ -848,6 +849,46 @@ const radarRecordLabels: Record<string, string> = {
   note: '备注',
   status_change: '状态变更',
 };
+
+/**
+ * Operation alerts are global platform events, not follow targets. They use
+ * the global subscription rules and point at the source/task detail page.
+ */
+export function dispatchOperationNotification(input: {
+  ruleType: NotificationRuleType;
+  severity: NotificationSeverity;
+  title: string;
+  body: string | null;
+  targetType: 'source' | 'task';
+  targetId: string;
+  targetName: string;
+  link: string;
+  dedupeKey: string;
+}): number {
+  const rule = getGlobalRules().find((item) => item.eventType === input.ruleType);
+  if (!rule || (!rule.inApp && !rule.email)) return 0;
+  if (!meetsSeverity(input.severity, rule.minSeverity)) return 0;
+  const created = insertNotification(
+    {
+      ruleType: input.ruleType,
+      severity: input.severity,
+      title: input.title,
+      body: input.body,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      targetName: input.targetName,
+      eventId: null,
+      softwareId: null,
+      link: input.link,
+      sourceName: input.targetType === 'source' ? input.targetName : '采集任务',
+      sourceUrl: null,
+      inApp: rule.inApp,
+      dedupeKey: input.dedupeKey,
+    },
+    rule.email,
+  );
+  return created ? 1 : 0;
+}
 
 export function dispatchRadarRecord(item: RadarItem, record: RadarRecord): number {
   const target = findFollow('radar', item.id);

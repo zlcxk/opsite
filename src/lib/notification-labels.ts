@@ -1,9 +1,9 @@
 import type {
   DeliveryStatus,
-  FollowTargetType,
   NotificationMinSeverity,
   NotificationRuleType,
   NotificationSeverity,
+  NotificationTargetType,
 } from '@shared/types';
 
 export const notificationRuleMeta: Record<
@@ -45,6 +45,36 @@ export const notificationRuleMeta: Record<
     description: '技术发现流出现新的候选项目。',
     code: 'DISC',
   },
+  source_anomaly: {
+    label: '数据源异常',
+    description: '数据源健康检查或采集连续失败。',
+    code: 'OPS-SRC',
+  },
+  rate_limit: {
+    label: '接口限流',
+    description: '数据源触发 API 配额或速率限制。',
+    code: 'OPS-RATE',
+  },
+  task_failure: {
+    label: '任务失败',
+    description: '采集任务执行失败。',
+    code: 'OPS-TASK',
+  },
+  task_timeout: {
+    label: '任务超时',
+    description: '采集任务超过配置的执行时限。',
+    code: 'OPS-TIME',
+  },
+  data_stale: {
+    label: '数据过期',
+    description: '数据源的实际数据更新时间超过新鲜度周期。',
+    code: 'OPS-STALE',
+  },
+  task_recovered: {
+    label: '任务恢复',
+    description: '此前失败的采集任务重新执行成功。',
+    code: 'OPS-REC',
+  },
 };
 
 export const notificationRuleOrder = Object.keys(notificationRuleMeta) as NotificationRuleType[];
@@ -58,11 +88,13 @@ export const notificationSeverityMeta: Record<
   normal: { label: '普通', className: 'neutral' },
 };
 
-export const targetTypeMeta: Record<FollowTargetType, { label: string; code: string }> = {
+export const targetTypeMeta: Record<NotificationTargetType, { label: string; code: string }> = {
   software: { label: '软件', code: 'SW' },
   radar: { label: '雷达条目', code: 'RADAR' },
   discovery: { label: '发现候选', code: 'DISC' },
   advisory: { label: '漏洞公告', code: 'ADV' },
+  source: { label: '数据源', code: 'SRC' },
+  task: { label: '采集任务', code: 'TASK' },
 };
 
 export const deliveryStatusMeta: Record<DeliveryStatus, { label: string; className: string }> = {

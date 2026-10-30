@@ -18,6 +18,12 @@ import { Discover } from './pages/Discover';
 import { DiscoverDetail } from './pages/DiscoverDetail';
 import { Knowledge } from './pages/Knowledge';
 import { Settings } from './pages/Settings';
+import { OperationsOverviewPage } from './pages/OperationsOverview';
+import { OperationsSourcesPage } from './pages/OperationsSources';
+import { OperationsSourceDetailPage } from './pages/OperationsSourceDetail';
+import { OperationsTasksPage } from './pages/OperationsTasks';
+import { OperationsTaskDetailPage } from './pages/OperationsTaskDetail';
+import { OperationsRunDetailPage } from './pages/OperationsRunDetail';
 import { useDocumentTitle } from './lib/hooks';
 
 function NotFound() {
@@ -58,6 +64,12 @@ export default function App() {
               <Route path="discover" element={<Discover />} />
               <Route path="discover/:id" element={<DiscoverDetail />} />
               <Route path="knowledge" element={<Knowledge />} />
+              <Route path="operations" element={<OperationsOverviewPage />} />
+              <Route path="operations/sources" element={<OperationsSourcesPage />} />
+              <Route path="operations/sources/:id" element={<OperationsSourceDetailPage />} />
+              <Route path="operations/tasks" element={<OperationsTasksPage />} />
+              <Route path="operations/tasks/:id" element={<OperationsTaskDetailPage />} />
+              <Route path="operations/runs/:id" element={<OperationsRunDetailPage />} />
               <Route path="settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />
             </Route>
