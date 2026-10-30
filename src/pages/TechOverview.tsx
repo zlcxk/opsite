@@ -23,7 +23,13 @@ import { useApi, useDocumentTitle } from '../lib/hooks';
 import { api } from '../lib/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime, relativeTime } from '../lib/format';
-import { masteryColor, masteryLabels, masteryOrder, techNodeTypeLabels } from '../lib/tech';
+import {
+  formatPercent,
+  masteryColor,
+  masteryLabels,
+  masteryOrder,
+  techNodeTypeLabels,
+} from '../lib/tech';
 import { EmptyState, Modal, PageHeader } from '../components/ui';
 
 const domainIcons: Record<string, typeof Boxes> = { Boxes, Activity, Network };
@@ -165,8 +171,14 @@ export function TechOverview() {
             <span>
               <strong className="mono">{data?.stats.focus ?? 0}</strong> 个重点关注
             </span>
+            <span>
+              <strong className="mono">
+                {data?.stats.content.complete ?? 0}/{data?.stats.content.total ?? 0}
+              </strong>{' '}
+              个节点文档已完善
+            </span>
             <span className="tech-summary-note">
-              {data?.stats.mastered ?? 0} 个已掌握 · 掌握状态由你自己维护
+              文档完成度 {formatPercent(data?.stats.content.completionRate ?? 0)} · 掌握状态由你自己维护
             </span>
           </div>
 
@@ -191,6 +203,23 @@ export function TechOverview() {
                     </div>
                     <p>{domain.description || '还没有领域描述。'}</p>
                     <MasteryBar domain={domain} />
+                    <div className="tech-domain-content">
+                      <span className="tech-domain-content-label">技术文档</span>
+                      <span className="tech-domain-content-bar" aria-hidden="true">
+                        <span
+                          style={{
+                            width: `${Math.min(100, domain.contentCounts.completionRate)}%`,
+                          }}
+                        />
+                      </span>
+                      <span className="tech-domain-content-rate">
+                        {formatPercent(domain.contentCounts.completionRate)}
+                      </span>
+                      <span className="tech-domain-content-detail">
+                        {domain.contentCounts.complete}/{domain.contentCounts.total} 已完善 ·{' '}
+                        {domain.contentCounts.missing} 待补充
+                      </span>
+                    </div>
                     <div className="tech-domain-card-foot">
                       <span className="tech-domain-counts">
                         {masteryOrder.map((status) => {

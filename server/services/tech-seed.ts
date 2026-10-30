@@ -6,6 +6,7 @@ import type {
   TechViewType,
 } from '../../shared/types.js';
 import { db, nowIso } from '../db.js';
+import { seedTechContent } from './tech-content.js';
 
 export interface SeedNode {
   id: string;
@@ -1315,6 +1316,7 @@ export function applyTechTemplate(key: string): ApplyTemplateResult | null {
 
   const timestamp = nowIso();
   const inserted = { domains: 0, nodes: 0, relations: 0, views: 0, links: 0 };
+  const insertedNodeIds = new Set<string>();
 
   const run = db.transaction(() => {
     for (const domain of template.domains) {
@@ -1327,7 +1329,7 @@ export function applyTechTemplate(key: string): ApplyTemplateResult | null {
         .run(domain.id, domain.name, domain.description, domain.icon, timestamp, timestamp).changes;
 
       for (const [index, node] of domain.nodes.entries()) {
-        inserted.nodes += db
+        const nodeChanges = db
           .prepare(
             `INSERT INTO tech_nodes
               (id, domain_id, parent_id, name, node_type, summary, description, technical_role, core_principle,
@@ -1357,6 +1359,8 @@ export function applyTechTemplate(key: string): ApplyTemplateResult | null {
             timestamp,
             timestamp,
           ).changes;
+        inserted.nodes += nodeChanges;
+        if (nodeChanges > 0) insertedNodeIds.add(node.id);
 
         if (node.softwareSlug) {
           const softwareId = softwareIdBySlug(node.softwareSlug);
@@ -1402,6 +1406,11 @@ export function applyTechTemplate(key: string): ApplyTemplateResult | null {
   // Relations are seeded after nodes so cross-domain links are not dropped when
   // the target domain is applied later.
   inserted.relations += seedTemplateRelations(template);
+  // Freshly inserted nodes cannot have user content yet, so their authored
+  // knowledge is applied even when the same template key was seeded before.
+  if (insertedNodeIds.size) {
+    seedTechContent({ nodeIds: insertedNodeIds, force: true });
+  }
   return { key: template.key, inserted };
 }
 
@@ -1451,4 +1460,14 @@ export function seedTechnologyTemplates(): void {
   // A template applied in an earlier release may still miss a cross-domain
   // relation whose target was seeded later. Re-checking is idempotent.
   for (const template of TECH_TEMPLATES) seedTemplateRelations(template);
+  // Backfill knowledge content for databases created before P5.2. This only
+  // fills empty columns and is tracked per node in tech_content_seed.
+  try {
+    const content = seedTechContent();
+    if (content.applied > 0) {
+      console.log(`[tech] applied knowledge content to ${content.applied} nodes`);
+    }
+  } catch (error) {
+    console.error('[tech] failed to seed knowledge content', error);
+  }
 }

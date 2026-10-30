@@ -12,6 +12,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type {
+  TechContentStatus,
   TechDomainDetail,
   TechNodeDetail,
   TechTreeNode,
@@ -24,8 +25,12 @@ import { api } from '../lib/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime } from '../lib/format';
 import {
+  contentStatusLabels,
+  contentStatusOrder,
   filterTree,
+  filterTreeByContent,
   flattenTree,
+  formatPercent,
   siblingIds,
   viewTypeLabels,
 } from '../lib/tech';
@@ -47,6 +52,7 @@ export function TechDomain() {
 
   const [tab, setTab] = useState<Tab>(searchParams.get('tab') === 'views' ? 'views' : 'tree');
   const [search, setSearch] = useState('');
+  const [contentFilter, setContentFilter] = useState<TechContentStatus | ''>('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [formOpen, setFormOpen] = useState(false);
   const [formParent, setFormParent] = useState<TechTreeNode | null>(null);
@@ -70,16 +76,17 @@ export function TechDomain() {
     walk(detail.tree, 0);
     setExpanded(next);
     setSearch('');
+    setContentFilter('');
     setTab(searchParams.get('tab') === 'views' ? 'views' : 'tree');
     // Reset view state only when switching to another domain.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail?.domain.id]);
 
   const filteredTree = useMemo(
-    () => (detail ? filterTree(detail.tree, search) : []),
-    [detail, search],
+    () => (detail ? filterTree(filterTreeByContent(detail.tree, contentFilter), search) : []),
+    [detail, search, contentFilter],
   );
-  const forceExpand = search.trim().length > 0;
+  const forceExpand = search.trim().length > 0 || contentFilter !== '';
 
   const toggle = (nodeId: string) => {
     setExpanded((current) => {
@@ -247,6 +254,35 @@ export function TechDomain() {
 
       {error && <div className="error-note mb-3">{error}</div>}
 
+      <div className="content-stats content-stats-domain">
+        <div className="content-stats-main">
+          <span className="content-stats-rate">{formatPercent(detail.domain.contentCounts.completionRate)}</span>
+          <span className="content-stats-caption">
+            文档完成度 · {detail.domain.contentCounts.complete} / {detail.domain.contentCounts.total} 个节点已完善
+          </span>
+        </div>
+        <div className="content-stats-items">
+          <span className="content-stats-item">
+            待补充 <strong>{detail.domain.contentCounts.missing}</strong>
+          </span>
+          <span className="content-stats-item">
+            草稿 <strong>{detail.domain.contentCounts.draft}</strong>
+          </span>
+          <span className="content-stats-item">
+            待核实 <strong>{detail.domain.contentCounts.needs_review}</strong>
+          </span>
+          <span className="content-stats-item">
+            已完善 <strong>{detail.domain.contentCounts.complete}</strong>
+          </span>
+        </div>
+        <div className="content-stats-bar" aria-hidden="true">
+          <span
+            className="content-stats-bar-fill"
+            style={{ width: `${Math.min(100, detail.domain.contentCounts.completionRate)}%` }}
+          />
+        </div>
+      </div>
+
       <div className="tech-domain-tabs">
         <div className="segmented">
           <button className={tab === 'tree' ? 'active' : ''} onClick={() => setTab('tree')}>
@@ -275,6 +311,19 @@ export function TechDomain() {
                 aria-label="搜索技术树"
               />
             </div>
+            <select
+              className="tech-tree-content-filter"
+              value={contentFilter}
+              onChange={(event) => setContentFilter(event.target.value as TechContentStatus | '')}
+              aria-label="按文档状态筛选"
+            >
+              <option value="">全部文档状态</option>
+              {contentStatusOrder.map((status) => (
+                <option key={status} value={status}>
+                  {contentStatusLabels[status]}
+                </option>
+              ))}
+            </select>
             <span className="tech-tree-toolbar-count">
               {flattenTree(filteredTree).length} / {detail.nodes.length} 个节点
             </span>
@@ -301,7 +350,12 @@ export function TechDomain() {
                   </button>
                 </>
               ) : (
-                <p>没有匹配「{search}」的节点。</p>
+                <p>
+                  没有匹配
+                  {search.trim() ? `「${search}」` : ''}
+                  {contentFilter ? `「${contentStatusLabels[contentFilter]}」` : ''}
+                  的节点。
+                </p>
               )}
             </div>
           ) : (

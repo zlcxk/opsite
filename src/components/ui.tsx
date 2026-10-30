@@ -94,6 +94,7 @@ export function Modal({
   children,
   footer,
   wide = false,
+  full = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -103,6 +104,7 @@ export function Modal({
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  full?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -121,7 +123,12 @@ export function Modal({
   if (!open) return null;
   return createPortal(
     <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div
+        className={`modal ${wide ? 'wide' : ''} ${full ? 'full' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <div className="modal-head">
           <div>
             {eyebrow && <div className="eyebrow mb-1.5">{eyebrow}</div>}

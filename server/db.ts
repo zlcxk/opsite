@@ -565,6 +565,11 @@ CREATE TABLE IF NOT EXISTS tech_nodes (
   reference_links TEXT NOT NULL DEFAULT '[]',
   personal_notes TEXT,
   research_questions TEXT,
+  content_markdown TEXT,
+  content_status TEXT NOT NULL DEFAULT 'missing',
+  content_source TEXT,
+  applicable_versions TEXT,
+  content_updated_at TEXT,
   mastery_status TEXT NOT NULL DEFAULT 'unknown',
   focus_level TEXT NOT NULL DEFAULT 'normal',
   status TEXT NOT NULL DEFAULT 'active',
@@ -620,6 +625,12 @@ CREATE TABLE IF NOT EXISTS tech_seed (
   key TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tech_content_seed (
+  key TEXT PRIMARY KEY,
+  version INTEGER NOT NULL DEFAULT 1,
+  applied_at TEXT NOT NULL
+);
 `);
 
 // Forward-compatible migration for databases created by earlier releases.
@@ -647,6 +658,17 @@ ensureColumn('collection_tasks', 'schedule_custom', 'INTEGER NOT NULL DEFAULT 0'
 // Knowledge notes can optionally be attached to a technology node. The link is
 // additive: existing notes keep working exactly as before.
 ensureColumn('knowledge_note', 'tech_node_id', 'TEXT');
+// P5.2 technology knowledge documents live on the node itself. Existing rows
+// keep their structured fields and start with no Markdown document.
+ensureColumn('tech_nodes', 'content_markdown', 'TEXT');
+ensureColumn('tech_nodes', 'content_status', "TEXT NOT NULL DEFAULT 'missing'");
+ensureColumn('tech_nodes', 'content_source', 'TEXT');
+ensureColumn('tech_nodes', 'applicable_versions', 'TEXT');
+ensureColumn('tech_nodes', 'content_updated_at', 'TEXT');
+db.prepare(
+  `UPDATE tech_nodes SET content_status = 'missing'
+   WHERE content_markdown IS NULL OR TRIM(content_markdown) = ''`,
+).run();
 db.prepare("UPDATE radar_item SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''").run();
 
 db.exec(`
@@ -658,6 +680,7 @@ CREATE INDEX IF NOT EXISTS idx_discovery_job_run ON discovery_job(run_id);
 CREATE INDEX IF NOT EXISTS idx_tech_nodes_domain ON tech_nodes(domain_id, parent_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_tech_nodes_parent ON tech_nodes(parent_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_tech_nodes_status ON tech_nodes(status, mastery_status, focus_level);
+CREATE INDEX IF NOT EXISTS idx_tech_nodes_content ON tech_nodes(status, content_status);
 CREATE INDEX IF NOT EXISTS idx_tech_relations_source ON tech_relations(source_node_id, relation_type);
 CREATE INDEX IF NOT EXISTS idx_tech_relations_target ON tech_relations(target_node_id, relation_type);
 CREATE INDEX IF NOT EXISTS idx_tech_views_domain ON tech_views(domain_id, sort_order);

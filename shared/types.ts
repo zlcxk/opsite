@@ -813,6 +813,18 @@ export type TechMasteryStatus =
   | 'understood'
   | 'mastered'
   | 'deep_dive';
+export type TechContentStatus = 'missing' | 'draft' | 'complete' | 'needs_review';
+export type TechContentSource = 'official' | 'practice' | 'curated' | 'mixed';
+
+export interface TechContentCounts {
+  total: number;
+  missing: number;
+  draft: number;
+  complete: number;
+  needs_review: number;
+  /** 已完善节点占有效节点总数的百分比，保留一位小数。 */
+  completionRate: number;
+}
 export type TechRelationType =
   | 'contains'
   | 'depends_on'
@@ -854,6 +866,7 @@ export interface TechDomainSummary extends TechDomain {
   nodeCount: number;
   focusCount: number;
   masteryCounts: TechMasteryCounts;
+  contentCounts: TechContentCounts;
   lastNodeUpdatedAt: string | null;
 }
 
@@ -867,6 +880,8 @@ export interface TechNodeSummary {
   status: TechNodeStatus;
   masteryStatus: TechMasteryStatus;
   focusLevel: TechFocusLevel;
+  contentStatus: TechContentStatus;
+  hasContent: boolean;
   sortOrder: number;
   childCount: number;
   updatedAt: string;
@@ -889,6 +904,11 @@ export interface TechNode extends TechNodeSummary {
   referenceLinks: TechExternalLink[];
   researchQuestions: string | null;
   personalNotes: string | null;
+  contentMarkdown: string | null;
+  contentStatus: TechContentStatus;
+  contentSource: TechContentSource | null;
+  applicableVersions: string | null;
+  contentUpdatedAt: string | null;
   createdAt: string;
 }
 
@@ -1004,6 +1024,7 @@ export interface TechOverview {
     learning: number;
     focus: number;
     mastered: number;
+    content: TechContentCounts;
   };
 }
 

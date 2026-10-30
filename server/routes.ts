@@ -320,6 +320,8 @@ const techMasteryStatuses = [
   'deep_dive',
 ] as const;
 const techFocusLevels = ['normal', 'focus'] as const;
+const techContentStatuses = ['missing', 'draft', 'complete', 'needs_review'] as const;
+const techContentSources = ['official', 'practice', 'curated', 'mixed'] as const;
 const techRelationTypes = [
   'contains',
   'depends_on',
@@ -348,6 +350,10 @@ const techNodeSchema = z.object({
   referenceLinks: z.array(techLinkSchema).max(20).optional(),
   personalNotes: z.string().max(20_000).optional().nullable(),
   researchQuestions: z.string().max(10_000).optional().nullable(),
+  contentMarkdown: z.string().max(200_000).optional().nullable(),
+  contentStatus: z.enum(techContentStatuses).optional(),
+  contentSource: z.enum(techContentSources).optional().nullable(),
+  applicableVersions: z.string().trim().max(500).optional().nullable(),
   masteryStatus: z.enum(techMasteryStatuses).optional(),
   focusLevel: z.enum(techFocusLevels).optional(),
 });
@@ -424,6 +430,8 @@ const techNodeListSchema = z.object({
   q: z.string().trim().max(120).optional(),
   nodeType: z.enum(techNodeTypes).optional(),
   mastery: z.enum(techMasteryStatuses).optional(),
+  contentStatus: z.enum(techContentStatuses).optional(),
+  hasContent: z.enum(['true', 'false']).optional(),
   focus: z.enum(['true', 'false']).optional(),
   status: z.enum(['active', 'archived', 'all']).optional(),
   limit: z.coerce.number().int().min(1).max(300).optional(),
@@ -1265,8 +1273,14 @@ router.get('/tech/nodes', (req, res) => {
     res.status(400).json({ error: '查询参数不合法' });
     return;
   }
-  const { focus, ...rest } = parsed.data;
-  res.json(listNodes({ ...rest, focus: focus === 'true' }));
+  const { focus, hasContent, ...rest } = parsed.data;
+  res.json(
+    listNodes({
+      ...rest,
+      focus: focus === 'true',
+      hasContent: hasContent === undefined ? undefined : hasContent === 'true',
+    }),
+  );
 });
 
 router.get('/tech/nodes/:id', (req, res) => {

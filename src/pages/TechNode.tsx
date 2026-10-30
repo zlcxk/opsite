@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Archive,
@@ -33,6 +33,8 @@ import { useAppData } from '../contexts/AppDataContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime, supportMeta } from '../lib/format';
 import {
+  contentSourceLabels,
+  contentStatusLabels,
   focusLabels,
   masteryColor,
   masteryLabels,
@@ -43,6 +45,8 @@ import {
 } from '../lib/tech';
 import { ActionMenu, EmptyState, Modal, PageHeader } from '../components/ui';
 import { TechNodeFormDialog } from '../components/TechNodeFormDialog';
+import { TechDocEditor, type TechDocEditorHandle } from '../components/TechDocEditor';
+import { MarkdownPreview } from '../components/markdown/MarkdownPreview';
 
 function UnderstandBlock({ label, value }: { label: string; value: string | null }) {
   if (!value) return null;
@@ -59,7 +63,7 @@ export function TechNode() {
   const navigate = useNavigate();
   const { push } = useToast();
   const { data: appData } = useAppData();
-  const { data, loading, error, refetch } = useApi<TechNodeDetail>(id ? `/tech/nodes/${id}` : null);
+  const { data, loading, error, refetch, setData } = useApi<TechNodeDetail>(id ? `/tech/nodes/${id}` : null);
   const { data: domainNodes } = useApi<TechNodeListResponse>(
     data ? `/tech/nodes?domainId=${data.node.domainId}&status=active&limit=300` : null,
   );
@@ -82,6 +86,8 @@ export function TechNode() {
   const [relationDeleting, setRelationDeleting] = useState<TechRelationWithNodes | null>(null);
   const [softwarePick, setSoftwarePick] = useState('');
   const [radarPick, setRadarPick] = useState('');
+  const [docOpen, setDocOpen] = useState(false);
+  const docEditorRef = useRef<TechDocEditorHandle | null>(null);
 
   useEffect(() => {
     if (!data) return;
@@ -113,6 +119,18 @@ export function TechNode() {
 
   const refresh = async () => {
     await refetch(true);
+  };
+
+  const closeDocEditor = () => {
+    if (docEditorRef.current?.isDirty() && !window.confirm('技术文档还有未保存的更改，确定关闭？')) {
+      return;
+    }
+    setDocOpen(false);
+  };
+
+  const applySavedDoc = (saved: TechNodeDetail['node']) => {
+    if (!data) return;
+    setData({ ...data, node: saved });
   };
 
   const updateCognition = async (patch: { masteryStatus?: TechMasteryStatus; focusLevel?: 'normal' | 'focus' }) => {
@@ -332,6 +350,9 @@ export function TechNode() {
 
       <div className="tech-node-statusline">
         <span className={`pill type-${node.nodeType}`}>{techNodeTypeLabels[node.nodeType]}</span>
+        <span className={`content-badge content-${node.contentStatus}`}>
+          {contentStatusLabels[node.contentStatus]}
+        </span>
         {node.status === 'archived' && <span className="pill pill-neutral">已归档</span>}
         <span className="tech-node-status-item">
           <span className="tech-mastery-dot" style={{ background: masteryColor(node.masteryStatus) }} />
@@ -374,6 +395,62 @@ export function TechNode() {
                   <button className="btn btn-secondary btn-sm" onClick={() => setEditOpen(true)}>
                     <Pencil size={12} /> 补充内容
                   </button>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <span className="eyebrow">Technical document</span>
+                <h3>技术文档</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`content-badge content-${node.contentStatus}`}>
+                  {contentStatusLabels[node.contentStatus]}
+                </span>
+                <button className="btn btn-secondary btn-sm" onClick={() => setDocOpen(true)}>
+                  <Pencil size={12} /> {node.contentMarkdown ? '编辑文档' : '撰写文档'}
+                </button>
+              </div>
+            </div>
+            <div className="panel-body">
+              <div className="tech-doc-facts">
+                <span>适用版本：{node.applicableVersions || '未标注'}</span>
+                <span>内容来源：{node.contentSource ? contentSourceLabels[node.contentSource] : '未标注'}</span>
+                <span>
+                  内容更新：{node.contentUpdatedAt ? formatDateTime(node.contentUpdatedAt) : '尚未撰写'}
+                </span>
+              </div>
+              {node.contentMarkdown ? (
+                <MarkdownPreview content={node.contentMarkdown} className="tech-doc-preview" />
+              ) : (
+                <div className="tech-section-empty">
+                  <p>这个节点还没有技术文档，当前只有上面的结构化知识卡片。</p>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setDocOpen(true)}>
+                    <Pencil size={12} /> 撰写技术文档
+                  </button>
+                </div>
+              )}
+              {(node.docsUrl || node.repoUrl || node.referenceLinks.length > 0) && (
+                <div className="tech-doc-refs">
+                  <span className="tech-doc-refs-label">参考入口</span>
+                  {node.docsUrl && (
+                    <a href={node.docsUrl} target="_blank" rel="noreferrer noopener">
+                      <ExternalLink size={11} /> 官方文档
+                    </a>
+                  )}
+                  {node.repoUrl && (
+                    <a href={node.repoUrl} target="_blank" rel="noreferrer noopener">
+                      <ExternalLink size={11} /> 代码仓库
+                    </a>
+                  )}
+                  {node.referenceLinks.map((link) => (
+                    <a key={link.url} href={link.url} target="_blank" rel="noreferrer noopener">
+                      <ExternalLink size={11} /> {link.label || link.url}
+                    </a>
+                  ))}
                 </div>
               )}
             </div>
@@ -780,6 +857,30 @@ export function TechNode() {
           onSaved={() => void refresh()}
         />
       )}
+
+      <Modal
+        open={docOpen}
+        onClose={closeDocEditor}
+        eyebrow={`${data.domain.name} · ${techNodeTypeLabels[node.nodeType]}`}
+        title={`${node.name} · 技术文档`}
+        description="Markdown 文档独立于节点基础信息保存，草稿会自动保留最后一次编辑结果。"
+        full
+        footer={
+          <div className="tech-doc-modal-foot">
+            <span>关闭前会自动保存已编辑的内容；标记「已完善」即表示你已人工确认。</span>
+            <button className="btn btn-secondary" onClick={closeDocEditor}>
+              完成
+            </button>
+          </div>
+        }
+      >
+        <TechDocEditor
+          ref={docEditorRef}
+          node={node}
+          onSaved={applySavedDoc}
+          minHeight={460}
+        />
+      </Modal>
 
       <Modal
         open={deleteOpen}

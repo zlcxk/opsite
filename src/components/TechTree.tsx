@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import type { TechTreeNode } from '@shared/types';
 import { ActionMenu } from './ui';
-import { masteryColor, masteryLabels, techNodeTypeLabels } from '../lib/tech';
+import { contentStatusLabels, masteryColor, masteryLabels, techNodeTypeLabels } from '../lib/tech';
 
 export function TechTree({
   nodes,
@@ -143,6 +143,9 @@ function TreeRow({
       <span className={`tech-type-dot type-${node.nodeType}`} aria-hidden="true" />
       <span className="tech-tree-name">{node.name}</span>
       <span className="tech-type-label">{techNodeTypeLabels[node.nodeType]}</span>
+      <span className={`content-badge content-${node.contentStatus}`}>
+        {contentStatusLabels[node.contentStatus]}
+      </span>
       <span className="tech-tree-summary">{node.summary}</span>
       <span className="tech-tree-flags">
         {node.focusLevel === 'focus' && (

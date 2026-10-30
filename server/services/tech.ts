@@ -1,5 +1,8 @@
 import type {
   KnowledgeNote,
+  TechContentCounts,
+  TechContentSource,
+  TechContentStatus,
   TechDomain,
   TechDomainDetail,
   TechDomainSummary,
@@ -72,6 +75,18 @@ export const TECH_RELATION_TYPES: TechRelationType[] = [
   'related',
 ];
 export const TECH_VIEW_TYPES: TechViewType[] = ['architecture', 'workflow', 'relation', 'deployment'];
+export const TECH_CONTENT_STATUSES: TechContentStatus[] = [
+  'missing',
+  'draft',
+  'complete',
+  'needs_review',
+];
+export const TECH_CONTENT_SOURCES: TechContentSource[] = [
+  'official',
+  'practice',
+  'curated',
+  'mixed',
+];
 
 interface DomainRow {
   id: string;
@@ -105,6 +120,11 @@ interface NodeRow {
   reference_links: string;
   personal_notes: string | null;
   research_questions: string | null;
+  content_markdown: string | null;
+  content_status: TechContentStatus;
+  content_source: TechContentSource | null;
+  applicable_versions: string | null;
+  content_updated_at: string | null;
   mastery_status: TechMasteryStatus;
   focus_level: TechFocusLevel;
   status: 'active' | 'archived';
@@ -158,6 +178,14 @@ function mapDomain(row: DomainRow): TechDomain {
   };
 }
 
+function hasMarkdownContent(value: string | null | undefined): boolean {
+  return Boolean(value && value.trim());
+}
+
+function effectiveContentStatus(row: NodeRow): TechContentStatus {
+  return hasMarkdownContent(row.content_markdown) ? row.content_status : 'missing';
+}
+
 function mapNodeSummary(row: NodeRow, childCount = 0): TechNodeSummary {
   return {
     id: row.id,
@@ -169,6 +197,8 @@ function mapNodeSummary(row: NodeRow, childCount = 0): TechNodeSummary {
     status: row.status,
     masteryStatus: row.mastery_status,
     focusLevel: row.focus_level,
+    contentStatus: effectiveContentStatus(row),
+    hasContent: hasMarkdownContent(row.content_markdown),
     sortOrder: row.sort_order,
     childCount,
     updatedAt: row.updated_at,
@@ -209,6 +239,11 @@ function mapNode(row: NodeRow, childCount: number): TechNode {
     referenceLinks: parseLinks(row.reference_links),
     researchQuestions: row.research_questions,
     personalNotes: row.personal_notes,
+    contentMarkdown: row.content_markdown,
+    contentStatus: effectiveContentStatus(row),
+    contentSource: row.content_source,
+    applicableVersions: row.applicable_versions,
+    contentUpdatedAt: row.content_updated_at,
     createdAt: row.created_at,
   };
 }
@@ -331,6 +366,54 @@ function assertSiblingName(domainId: string, parentId: string | null, name: stri
   if (row) throw new TechRequestError('同一层级下已存在同名节点');
 }
 
+/* --------------------------------- Content -------------------------------- */
+
+const emptyContentCounts = (): TechContentCounts => ({
+  total: 0,
+  missing: 0,
+  draft: 0,
+  complete: 0,
+  needs_review: 0,
+  completionRate: 0,
+});
+
+function completionRate(complete: number, total: number): number {
+  if (!total) return 0;
+  return Math.round((complete / total) * 1000) / 10;
+}
+
+export function contentCounts(domainId?: string): TechContentCounts {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+        SUM(CASE WHEN content_markdown IS NULL OR TRIM(content_markdown) = '' THEN 1 ELSE 0 END) AS missing,
+        SUM(CASE WHEN content_markdown IS NOT NULL AND TRIM(content_markdown) != ''
+                  AND content_status = 'draft' THEN 1 ELSE 0 END) AS draft,
+        SUM(CASE WHEN content_markdown IS NOT NULL AND TRIM(content_markdown) != ''
+                  AND content_status = 'complete' THEN 1 ELSE 0 END) AS complete,
+        SUM(CASE WHEN content_markdown IS NOT NULL AND TRIM(content_markdown) != ''
+                  AND content_status = 'needs_review' THEN 1 ELSE 0 END) AS needs_review
+       FROM tech_nodes WHERE status = 'active' ${domainId ? 'AND domain_id = ?' : ''}`,
+    )
+    .get(...(domainId ? [domainId] : [])) as {
+    total: number;
+    missing: number | null;
+    draft: number | null;
+    complete: number | null;
+    needs_review: number | null;
+  };
+  const counts = {
+    total: row.total,
+    missing: row.missing ?? 0,
+    draft: row.draft ?? 0,
+    complete: row.complete ?? 0,
+    needs_review: row.needs_review ?? 0,
+    completionRate: 0,
+  };
+  counts.completionRate = completionRate(counts.complete, counts.total);
+  return counts;
+}
+
 /* --------------------------------- Domains -------------------------------- */
 
 export function listDomainSummaries(): TechDomainSummary[] {
@@ -360,11 +443,45 @@ export function listDomainSummaries(): TechDomainSummary[] {
     mastery.set(row.domain_id, counts);
   }
 
+  const contentRows = db
+    .prepare(
+      `SELECT domain_id,
+        SUM(CASE WHEN content_markdown IS NULL OR TRIM(content_markdown) = '' THEN 1 ELSE 0 END) AS missing,
+        SUM(CASE WHEN content_markdown IS NOT NULL AND TRIM(content_markdown) != ''
+                  AND content_status = 'draft' THEN 1 ELSE 0 END) AS draft,
+        SUM(CASE WHEN content_markdown IS NOT NULL AND TRIM(content_markdown) != ''
+                  AND content_status = 'complete' THEN 1 ELSE 0 END) AS complete,
+        SUM(CASE WHEN content_markdown IS NOT NULL AND TRIM(content_markdown) != ''
+                  AND content_status = 'needs_review' THEN 1 ELSE 0 END) AS needs_review,
+        COUNT(*) AS total
+       FROM tech_nodes WHERE status = 'active' GROUP BY domain_id`,
+    )
+    .all() as Array<{
+    domain_id: string;
+    total: number;
+    missing: number | null;
+    draft: number | null;
+    complete: number | null;
+    needs_review: number | null;
+  }>;
+  const content = new Map<string, TechContentCounts>();
+  for (const row of contentRows) {
+    const counts = emptyContentCounts();
+    counts.total = row.total;
+    counts.missing = row.missing ?? 0;
+    counts.draft = row.draft ?? 0;
+    counts.complete = row.complete ?? 0;
+    counts.needs_review = row.needs_review ?? 0;
+    counts.completionRate = completionRate(counts.complete, counts.total);
+    content.set(row.domain_id, counts);
+  }
+
   return rows.map((row) => ({
     ...mapDomain(row),
     nodeCount: row.node_count,
     focusCount: row.focus_count,
     masteryCounts: mastery.get(row.id) ?? emptyMastery(),
+    contentCounts: content.get(row.id) ?? emptyContentCounts(),
     lastNodeUpdatedAt: row.last_node_updated_at,
   }));
 }
@@ -464,6 +581,8 @@ export interface NodeListOptions {
   nodeType?: TechNodeType;
   mastery?: TechMasteryStatus;
   focus?: boolean;
+  contentStatus?: TechContentStatus;
+  hasContent?: boolean;
   status?: 'active' | 'archived' | 'all';
   limit?: number;
   offset?: number;
@@ -492,11 +611,29 @@ export function listNodes(options: NodeListOptions = {}): TechNodeListResponse {
   if (options.focus) {
     clauses.push("focus_level = 'focus'");
   }
+  if (options.hasContent !== undefined) {
+    clauses.push(
+      options.hasContent
+        ? "content_markdown IS NOT NULL AND TRIM(content_markdown) != ''"
+        : "(content_markdown IS NULL OR TRIM(content_markdown) = '')",
+    );
+  }
+  if (options.contentStatus) {
+    if (options.contentStatus === 'missing') {
+      clauses.push("(content_markdown IS NULL OR TRIM(content_markdown) = '')");
+    } else {
+      clauses.push("content_markdown IS NOT NULL AND TRIM(content_markdown) != '' AND content_status = ?");
+      params.push(options.contentStatus);
+    }
+  }
   const term = options.q?.trim().toLowerCase();
   if (term) {
-    clauses.push('(LOWER(name) LIKE ? OR LOWER(COALESCE(summary, \'\')) LIKE ?)');
+    clauses.push(
+      `(LOWER(name) LIKE ? OR LOWER(COALESCE(summary, '')) LIKE ?
+        OR LOWER(COALESCE(description, '')) LIKE ? OR LOWER(COALESCE(content_markdown, '')) LIKE ?)`,
+    );
     const pattern = `%${term}%`;
-    params.push(pattern, pattern);
+    params.push(pattern, pattern, pattern, pattern);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const total = (
@@ -677,6 +814,10 @@ export interface NodeInput {
   referenceLinks?: Array<{ label: string; url: string }>;
   personalNotes?: string | null;
   researchQuestions?: string | null;
+  contentMarkdown?: string | null;
+  contentStatus?: TechContentStatus;
+  contentSource?: TechContentSource | null;
+  applicableVersions?: string | null;
   masteryStatus?: TechMasteryStatus;
   focusLevel?: TechFocusLevel;
 }
@@ -695,12 +836,17 @@ export function createNode(domainId: string, input: NodeInput): TechNode {
        WHERE domain_id = ? AND ${parentId ? 'parent_id = ?' : 'parent_id IS NULL'}`,
     )
     .get(...(parentId ? [domainId, parentId] : [domainId])) as { value: number };
+  const markdown = hasMarkdownContent(input.contentMarkdown) ? input.contentMarkdown! : null;
+  const contentStatus: TechContentStatus = markdown
+    ? input.contentStatus ?? 'draft'
+    : 'missing';
   db.prepare(
     `INSERT INTO tech_nodes
       (id, domain_id, parent_id, name, node_type, summary, description, technical_role, core_principle,
        solved_problem, key_mechanism, use_cases, common_issues, docs_url, repo_url, reference_links,
-       personal_notes, research_questions, mastery_status, focus_level, status, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+       personal_notes, research_questions, content_markdown, content_status, content_source,
+       applicable_versions, content_updated_at, mastery_status, focus_level, status, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
   ).run(
     id,
     domainId,
@@ -720,6 +866,11 @@ export function createNode(domainId: string, input: NodeInput): TechNode {
     JSON.stringify(input.referenceLinks ?? []),
     input.personalNotes ?? null,
     input.researchQuestions ?? null,
+    markdown,
+    contentStatus,
+    input.contentSource ?? null,
+    input.applicableVersions?.trim() || null,
+    markdown ? timestamp : null,
     input.masteryStatus ?? 'unknown',
     input.focusLevel ?? 'normal',
     max.value + 1,
@@ -737,11 +888,41 @@ export function updateNode(
   if (input.name && input.name.trim().toLowerCase() !== existing.name.toLowerCase()) {
     assertSiblingName(existing.domain_id, existing.parent_id, input.name.trim(), id);
   }
+  const timestamp = nowIso();
+  const markdownProvided = input.contentMarkdown !== undefined;
+  const nextMarkdown = markdownProvided
+    ? hasMarkdownContent(input.contentMarkdown)
+      ? input.contentMarkdown!
+      : null
+    : existing.content_markdown;
+  const markdownChanged = (existing.content_markdown ?? null) !== (nextMarkdown ?? null);
+  let nextContentStatus: TechContentStatus = input.contentStatus ?? existing.content_status;
+  if (!hasMarkdownContent(nextMarkdown)) {
+    // A node without a document is always "待补充", regardless of what the
+    // caller asked for.
+    nextContentStatus = 'missing';
+  } else if (nextContentStatus === 'missing') {
+    nextContentStatus = 'draft';
+  } else if (markdownProvided && markdownChanged && input.contentStatus === undefined) {
+    // Editing an already-complete document must not leave it looking verified.
+    if (!hasMarkdownContent(existing.content_markdown) || existing.content_status === 'complete') {
+      nextContentStatus = 'draft';
+    } else {
+      nextContentStatus = existing.content_status;
+    }
+  }
+  const contentChanged =
+    markdownChanged ||
+    input.contentStatus !== undefined ||
+    input.contentSource !== undefined ||
+    input.applicableVersions !== undefined;
   db.prepare(
     `UPDATE tech_nodes SET
       name = ?, node_type = ?, summary = ?, description = ?, technical_role = ?, core_principle = ?,
       solved_problem = ?, key_mechanism = ?, use_cases = ?, common_issues = ?, docs_url = ?, repo_url = ?,
-      reference_links = ?, personal_notes = ?, research_questions = ?, mastery_status = ?, focus_level = ?,
+      reference_links = ?, personal_notes = ?, research_questions = ?,
+      content_markdown = ?, content_status = ?, content_source = ?, applicable_versions = ?,
+      content_updated_at = ?, mastery_status = ?, focus_level = ?,
       updated_at = ?
      WHERE id = ?`,
   ).run(
@@ -764,9 +945,16 @@ export function updateNode(
       : existing.reference_links,
     input.personalNotes !== undefined ? input.personalNotes : existing.personal_notes,
     input.researchQuestions !== undefined ? input.researchQuestions : existing.research_questions,
+    nextMarkdown,
+    nextContentStatus,
+    input.contentSource !== undefined ? input.contentSource : existing.content_source,
+    input.applicableVersions !== undefined
+      ? input.applicableVersions?.trim() || null
+      : existing.applicable_versions,
+    contentChanged ? timestamp : existing.content_updated_at,
     input.masteryStatus ?? existing.mastery_status,
     input.focusLevel ?? existing.focus_level,
-    nowIso(),
+    timestamp,
     id,
   );
   return getNode(id)!;
@@ -1336,6 +1524,7 @@ export function getTechOverview(): TechOverview {
       learning: statsRow.learning ?? 0,
       focus: statsRow.focus ?? 0,
       mastered: statsRow.mastered ?? 0,
+      content: contentCounts(),
     },
   };
 }

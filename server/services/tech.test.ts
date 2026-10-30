@@ -9,6 +9,7 @@ let dbModule: typeof import('../db.js');
 let seed: typeof import('./tech-seed.js');
 let tech: typeof import('./tech.js');
 let notes: typeof import('./notes.js');
+let content: typeof import('./tech-content.js');
 
 beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opsite-tech-'));
@@ -17,6 +18,7 @@ beforeAll(async () => {
   seed = await import('./tech-seed.js');
   tech = await import('./tech.js');
   notes = await import('./notes.js');
+  content = await import('./tech-content.js');
   seed.seedTechnologyTemplates();
 });
 
@@ -202,6 +204,126 @@ describe('technology node editing', () => {
     );
     tech.deleteView(view.id);
     notes.deleteNote(note.id);
+  });
+});
+
+describe('technology knowledge content', () => {
+  it('provides a knowledge card for every active node and docs for priority nodes', () => {
+    const emptyCards = dbModule.db
+      .prepare(
+        `SELECT count(*) AS count FROM tech_nodes
+         WHERE status = 'active'
+           AND (technical_role IS NULL OR TRIM(technical_role) = ''
+             OR core_principle IS NULL OR TRIM(core_principle) = ''
+             OR key_mechanism IS NULL OR TRIM(key_mechanism) = ''
+             OR use_cases IS NULL OR TRIM(use_cases) = '')`,
+      )
+      .get() as { count: number };
+    expect(emptyCards.count).toBe(0);
+
+    expect(content.contentEntryForNode('k8s-apiserver')?.contentMarkdown).toContain('准入');
+    expect(content.contentEntryForNode('prom-tsdb')?.contentMarkdown).toContain('WAL');
+    expect(content.TECH_CONTENT_ENTRIES).toHaveLength(160);
+
+    const docs = dbModule.db
+      .prepare(
+        `SELECT count(*) AS count FROM tech_nodes
+         WHERE status = 'active' AND content_markdown IS NOT NULL AND TRIM(content_markdown) != ''`,
+      )
+      .get() as { count: number };
+    expect(docs.count).toBeGreaterThanOrEqual(60);
+  });
+
+  it('derives missing, draft, complete and needs_review deterministically', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const node = tech.createNode(domain.id, { name: '文档状态测试节点', nodeType: 'concept' });
+    expect(tech.getNode(node.id)!.contentStatus).toBe('missing');
+    expect(tech.getNode(node.id)!.hasContent).toBe(false);
+
+    const drafted = tech.updateNode(node.id, {
+      contentMarkdown: '## 定义\n\n第一版内容。',
+      contentStatus: 'needs_review',
+    });
+    expect(drafted.contentStatus).toBe('needs_review');
+    expect(drafted.hasContent).toBe(true);
+
+    const completed = tech.updateNode(node.id, { contentStatus: 'complete' });
+    expect(completed.contentStatus).toBe('complete');
+
+    const edited = tech.updateNode(node.id, {
+      contentMarkdown: '## 定义\n\n修改后的内容。',
+    });
+    expect(edited.contentStatus).toBe('draft');
+
+    const emptied = tech.updateNode(node.id, { contentMarkdown: '   ', contentStatus: 'complete' });
+    expect(emptied.contentStatus).toBe('missing');
+    expect(emptied.contentMarkdown).toBeNull();
+
+    tech.deleteNode(node.id);
+  });
+
+  it('never overwrites user content when the content seed runs again', () => {
+    const node = tech.getNode('k8s-apiserver')!;
+    const original = {
+      markdown: node.contentMarkdown,
+      status: node.contentStatus,
+      role: node.technicalRole,
+      versions: node.applicableVersions,
+    };
+    tech.updateNode('k8s-apiserver', {
+      contentMarkdown: '# 我的 apiserver 笔记\n\n只属于我的内容。',
+      contentStatus: 'complete',
+      technicalRole: '我自定义的技术角色',
+      applicableVersions: '内部版本 1.0',
+    });
+    dbModule.db.prepare('DELETE FROM tech_content_seed WHERE key = ?').run('k8s-apiserver');
+    content.seedTechContent();
+
+    const after = tech.getNode('k8s-apiserver')!;
+    expect(after.contentMarkdown).toContain('只属于我的内容');
+    expect(after.contentStatus).toBe('complete');
+    expect(after.technicalRole).toBe('我自定义的技术角色');
+    expect(after.applicableVersions).toBe('内部版本 1.0');
+
+    tech.updateNode('k8s-apiserver', {
+      contentMarkdown: original.markdown,
+      contentStatus: original.status,
+      technicalRole: original.role,
+      applicableVersions: original.versions,
+    });
+  });
+
+  it('reports content statistics and excludes archived nodes', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Prometheus')!;
+    const baseline = tech.contentCounts();
+    const node = tech.createNode(domain.id, { name: '统计测试节点', nodeType: 'component' });
+    tech.updateNode(node.id, { contentMarkdown: '# 文档', contentStatus: 'complete' });
+
+    const withNode = tech.contentCounts(domain.id);
+    expect(withNode.total).toBeGreaterThanOrEqual(1);
+    expect(withNode.complete).toBeGreaterThanOrEqual(1);
+    expect(withNode.completionRate).toBeGreaterThan(0);
+
+    tech.setNodeArchived(node.id, true);
+    expect(tech.contentCounts().total).toBe(baseline.total);
+    expect(tech.contentCounts().complete).toBe(baseline.complete);
+
+    tech.deleteNode(node.id);
+  });
+
+  it('filters by content status and searches Markdown bodies', () => {
+    const drafts = tech.listNodes({ contentStatus: 'draft', limit: 300 });
+    expect(drafts.items.length).toBeGreaterThan(0);
+    expect(drafts.items.every((node) => node.contentStatus === 'draft' && node.hasContent)).toBe(true);
+
+    const missing = tech.listNodes({ contentStatus: 'missing', limit: 300 });
+    expect(missing.items.every((node) => node.contentStatus === 'missing' && !node.hasContent)).toBe(true);
+
+    const withDocs = tech.listNodes({ hasContent: true, limit: 300 });
+    expect(withDocs.items.every((node) => node.hasContent)).toBe(true);
+
+    const search = tech.listNodes({ q: 'histogram_quantile', limit: 300 });
+    expect(search.items.some((node) => node.id === 'prom-promql')).toBe(true);
   });
 });
 
