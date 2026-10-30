@@ -2,12 +2,17 @@ import { Router } from 'express';
 import cron from 'node-cron';
 import { z } from 'zod';
 import type {
+  DeliveryStatus,
+  FollowTargetType,
   LifecycleFeedItem,
+  NotificationRuleType,
+  NotificationSeverity,
   RadarKind,
   RadarRecordType,
   RadarStatus,
   ReleaseFeedItem,
   SourceType,
+  SubscriptionRule,
 } from '../shared/types.js';
 import { catalog, findCatalogItem } from './catalog.js';
 import { db, getSettingsObject, nowIso, setSetting } from './db.js';
@@ -51,6 +56,29 @@ import {
   getSchedulerState,
   rescheduleScheduler,
 } from './services/scheduler.js';
+import {
+  clearFollowRules,
+  followTarget,
+  getFollow,
+  getGlobalRules,
+  getFollowStatus,
+  listDeliveries,
+  listFollows,
+  listNotifications,
+  markAllNotificationsRead,
+  NotificationRequestError,
+  retryDelivery,
+  saveFollowRules,
+  saveGlobalRules,
+  sendTestEmail,
+  setNotificationRead,
+  unfollow,
+} from './services/notifications.js';
+import {
+  getSmtpConfigView,
+  saveSmtpConfig,
+  sanitizeSmtpError,
+} from './services/smtp.js';
 import {
   DiscoveryRequestError,
   findCandidateRadarMatch,
@@ -198,6 +226,11 @@ const settingsSchema = z.object({
   syncCron: z.string().optional(),
   emailEnabled: z.boolean().optional(),
   emailTo: z.string().optional(),
+  emailMode: z.enum(['realtime', 'digest']).optional(),
+  digestTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, '时间格式应为 HH:MM')
+    .optional(),
   notifyP0: z.boolean().optional(),
   notifyP1: z.boolean().optional(),
   notifyEol: z.boolean().optional(),
@@ -205,6 +238,72 @@ const settingsSchema = z.object({
   quietHours: z.string().optional(),
   staleAfterHours: z.number().optional(),
 });
+
+const followTargetTypes = ['software', 'radar', 'discovery', 'advisory'] as const;
+const notificationRuleTypes = [
+  'new_release',
+  'lifecycle_change',
+  'new_vulnerability',
+  'high_risk_advisory',
+  'advisory_update',
+  'project_update',
+  'discovery',
+] as const;
+
+const followSchema = z.object({
+  targetType: z.enum(followTargetTypes),
+  targetId: z.string().trim().min(1).max(200),
+});
+
+const subscriptionRuleSchema = z.object({
+  eventType: z.enum(notificationRuleTypes),
+  inApp: z.boolean(),
+  email: z.boolean(),
+  minSeverity: z.enum(['all', 'important', 'urgent']),
+});
+
+const subscriptionRulesSchema = z.object({
+  rules: z.array(subscriptionRuleSchema).max(20),
+});
+
+const smtpSchema = z.object({
+  enabled: z.boolean().optional(),
+  host: z.string().trim().max(255).optional(),
+  port: z.coerce.number().int().min(1).max(65_535).optional(),
+  encryption: z.enum(['none', 'starttls', 'ssl']).optional(),
+  username: z.string().trim().max(255).optional(),
+  password: z.string().max(1024).optional(),
+  fromName: z.string().trim().max(120).optional(),
+  fromEmail: z
+    .string()
+    .trim()
+    .max(255)
+    .refine((value) => value === '' || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value), {
+      message: '发件邮箱格式不合法',
+    })
+    .optional(),
+});
+
+const testEmailSchema = z.object({
+  to: z
+    .string()
+    .trim()
+    .max(255)
+    .refine((value) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value), { message: '收件邮箱格式不合法' })
+    .optional(),
+});
+
+const notificationReadSchema = z.object({
+  read: z.boolean(),
+});
+
+function sendNotificationError(res: any, error: unknown): boolean {
+  if (error instanceof NotificationRequestError) {
+    res.status(error.status).json({ error: error.message });
+    return true;
+  }
+  return false;
+}
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: any): T | null {
   const parsed = schema.safeParse(body);
@@ -816,6 +915,183 @@ router.patch('/settings', (req, res) => {
   updateSettings(body);
   rescheduleScheduler();
   res.json({ ok: true, settings: { ...getPublicSettings(), scheduler: getSchedulerState() } });
+});
+
+router.get('/follows', (req, res) => {
+  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
+  if (type && !followTargetTypes.includes(type as FollowTargetType)) {
+    res.status(400).json({ error: '关注类型不合法' });
+    return;
+  }
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : undefined;
+  res.json({ items: listFollows({ type: type as FollowTargetType | undefined, q }) });
+});
+
+router.get('/follows/status', (req, res) => {
+  const targetType = typeof req.query.targetType === 'string' ? req.query.targetType : '';
+  const targetId = typeof req.query.targetId === 'string' ? req.query.targetId.trim() : '';
+  if (!followTargetTypes.includes(targetType as FollowTargetType) || !targetId) {
+    res.status(400).json({ error: '请提供有效的关注对象' });
+    return;
+  }
+  res.json({ follow: getFollowStatus(targetType as FollowTargetType, targetId) });
+});
+
+router.post('/follows', (req, res) => {
+  const body = parseBody(followSchema, req.body, res);
+  if (!body) return;
+  try {
+    const result = followTarget(body.targetType, body.targetId);
+    res.status(result.created ? 201 : 200).json(result);
+  } catch (error) {
+    if (!sendNotificationError(res, error)) throw error;
+  }
+});
+
+router.delete('/follows/:id', (req, res) => {
+  if (!unfollow(req.params.id)) {
+    res.status(404).json({ error: '关注对象不存在' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+router.patch('/follows/:id/rules', (req, res) => {
+  const body = parseBody(subscriptionRulesSchema, req.body, res);
+  if (!body) return;
+  try {
+    const rules = saveFollowRules(req.params.id, body.rules as SubscriptionRule[]);
+    res.json({ rules, follow: getFollow(req.params.id) });
+  } catch (error) {
+    if (!sendNotificationError(res, error)) throw error;
+  }
+});
+
+router.delete('/follows/:id/rules', (req, res) => {
+  try {
+    const rules = clearFollowRules(req.params.id);
+    res.json({ rules, follow: getFollow(req.params.id) });
+  } catch (error) {
+    if (!sendNotificationError(res, error)) throw error;
+  }
+});
+
+router.get('/notification-rules', (_req, res) => {
+  res.json({ rules: getGlobalRules() });
+});
+
+router.patch('/notification-rules', (req, res) => {
+  const body = parseBody(subscriptionRulesSchema, req.body, res);
+  if (!body) return;
+  res.json({ rules: saveGlobalRules(body.rules as SubscriptionRule[]) });
+});
+
+router.get('/notifications', (req, res) => {
+  const severity = typeof req.query.severity === 'string' ? req.query.severity : undefined;
+  if (severity && !['urgent', 'important', 'normal'].includes(severity)) {
+    res.status(400).json({ error: '通知级别不合法' });
+    return;
+  }
+  const ruleType = typeof req.query.ruleType === 'string' ? req.query.ruleType : undefined;
+  if (ruleType && !notificationRuleTypes.includes(ruleType as NotificationRuleType)) {
+    res.status(400).json({ error: '通知类型不合法' });
+    return;
+  }
+  const limit = Number(req.query.limit ?? 30);
+  const offset = Number(req.query.offset ?? 0);
+  res.json(
+    listNotifications({
+      unreadOnly: req.query.unread === 'true' || req.query.unreadOnly === 'true',
+      severity: severity as NotificationSeverity | undefined,
+      ruleType: ruleType as NotificationRuleType | undefined,
+      limit: Number.isFinite(limit) ? limit : 30,
+      offset: Number.isFinite(offset) ? offset : 0,
+    }),
+  );
+});
+
+router.post('/notifications/read-all', (_req, res) => {
+  markAllNotificationsRead();
+  res.json({ ok: true });
+});
+
+router.get('/notifications/deliveries', (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  if (status && !['pending', 'sending', 'sent', 'failed', 'skipped'].includes(status)) {
+    res.status(400).json({ error: '投递状态不合法' });
+    return;
+  }
+  const limit = Number(req.query.limit ?? 20);
+  res.json({
+    items: listDeliveries({
+      status: status as DeliveryStatus | undefined,
+      limit: Number.isFinite(limit) ? limit : 20,
+    }),
+  });
+});
+
+router.post('/notifications/deliveries/:id/retry', (req, res) => {
+  const delivery = retryDelivery(req.params.id);
+  if (!delivery) {
+    res.status(404).json({ error: '投递记录不存在' });
+    return;
+  }
+  res.json({ delivery });
+});
+
+router.get('/notifications/smtp', (_req, res) => {
+  res.json({ smtp: getSmtpConfigView() });
+});
+
+router.patch('/notifications/smtp', asyncRoute(async (req, res) => {
+  const body = parseBody(smtpSchema, req.body, res);
+  if (!body) return;
+  const password = body.password?.trim() ? body.password : undefined;
+  const current = getSmtpConfigView();
+  const prospectiveEnabled = body.enabled ?? current.enabled;
+  const prospectiveHost = body.host ?? current.host;
+  const prospectiveFromEmail = body.fromEmail ?? current.fromEmail;
+  const prospectiveUsername = body.username ?? current.username;
+  const prospectivePassword = Boolean(password) || current.passwordConfigured;
+  if (
+    prospectiveEnabled &&
+    (!prospectiveHost || !prospectiveFromEmail || (prospectiveUsername && !prospectivePassword))
+  ) {
+    res.status(400).json({
+      error: '启用 SMTP 前请填写服务器、发件邮箱，以及账号对应的密码',
+      smtp: current,
+    });
+    return;
+  }
+  const smtp = saveSmtpConfig({ ...body, password });
+  res.json({ smtp });
+}));
+
+router.post('/notifications/smtp/test', asyncRoute(async (req, res) => {
+  const body = parseBody(testEmailSchema, req.body ?? {}, res);
+  if (!body) return;
+  const to = body.to || getPublicSettings().emailTo;
+  if (!to) {
+    res.status(400).json({ error: '请先填写收件邮箱' });
+    return;
+  }
+  try {
+    await sendTestEmail(to);
+    res.json({ ok: true, to });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'SMTP 测试失败';
+    res.status(502).json({ error: sanitizeSmtpError({ message }) });
+  }
+}));
+
+router.patch('/notifications/:id', (req, res) => {
+  const body = parseBody(notificationReadSchema, req.body, res);
+  if (!body) return;
+  if (!setNotificationRead(req.params.id, body.read)) {
+    res.status(404).json({ error: '通知不存在' });
+    return;
+  }
+  res.json({ ok: true });
 });
 
 router.get('/backup', asyncRoute(async (_req, res) => {

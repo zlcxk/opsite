@@ -1,9 +1,16 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpRight, BellOff, CheckCheck, X } from 'lucide-react';
+import type { NotificationItem, NotificationListResponse } from '@shared/types';
+import { useApi } from '../lib/hooks';
 import { api } from '../lib/api';
 import { relativeTime } from '../lib/format';
 import { useAppData } from '../contexts/AppDataContext';
 import { useToast } from '../contexts/ToastContext';
+import {
+  notificationRuleMeta,
+  notificationSeverityMeta,
+  targetTypeMeta,
+} from '../lib/notification-labels';
 
 interface NotificationDrawerProps {
   open: boolean;
@@ -11,32 +18,38 @@ interface NotificationDrawerProps {
 }
 
 export function NotificationDrawer({ open, onClose }: NotificationDrawerProps) {
-  const { data, refresh } = useAppData();
+  const { refresh } = useAppData();
   const { push } = useToast();
   const navigate = useNavigate();
+  const { data, loading, refetch } = useApi<NotificationListResponse>(
+    open ? '/notifications?limit=8' : null,
+  );
 
   if (!open) return null;
 
-  const events = data?.events ?? [];
-  const unread = data?.briefing.unread ?? 0;
+  const items = data?.items ?? [];
+  const unread = data?.unread ?? 0;
 
-  const openEvent = async (eventId: string, softwareId: string, type: string) => {
-    try {
-      await api.patch(`/events/${eventId}/read`, {});
-      await refresh(true);
-    } catch {
-      // navigation is still useful even if marking read fails
+  const openItem = async (item: NotificationItem) => {
+    if (!item.readAt) {
+      try {
+        await api.patch(`/notifications/${item.id}`, { read: true });
+        await refetch(true);
+        void refresh(true);
+      } catch {
+        // navigation is still useful even if marking read fails
+      }
     }
     onClose();
-    const tab = type === 'vulnerability' ? 'vulnerabilities' : type === 'release' ? 'releases' : 'lifecycle';
-    navigate(`/software/${softwareId}?tab=${tab}`);
+    if (item.link) navigate(item.link);
   };
 
   const markAll = async () => {
     try {
-      await api.post('/events/read-all');
+      await api.post('/notifications/read-all');
+      await refetch(true);
       await refresh(true);
-      push('已将全部情报标记为已读');
+      push('已将全部通知标记为已读');
     } catch (error) {
       push(error instanceof Error ? error.message : '操作失败', 'error');
     }
@@ -48,44 +61,52 @@ export function NotificationDrawer({ open, onClose }: NotificationDrawerProps) {
       <aside className="drawer" role="dialog" aria-modal="true" aria-label="通知中心">
         <div className="drawer-head">
           <div>
-            <div className="eyebrow">Notification feed</div>
+            <div className="eyebrow">Notification center</div>
             <h2 className="mt-2">通知</h2>
-            <p>{unread > 0 ? `${unread} 条未读情报` : '所有情报均已阅读'}</p>
+            <p>{unread > 0 ? `${unread} 条未读通知` : '所有通知均已阅读'}</p>
           </div>
           <button className="close-btn" onClick={onClose} aria-label="关闭通知">
             <X size={17} />
           </button>
         </div>
         <div className="drawer-body">
-          {events.length === 0 ? (
+          {loading && !data ? (
+            <div className="loading-block" style={{ minHeight: 220 }} />
+          ) : items.length === 0 ? (
             <div className="empty-state" style={{ minHeight: 260 }}>
               <span className="empty-mark">
                 <BellOff size={17} />
               </span>
               <h3>暂无通知</h3>
-              <p>当关注的软件出现漏洞、版本变化或生命周期状态变化时，情报会出现在这里。</p>
+              <p>关注软件或雷达条目后，符合订阅规则的变化会出现在这里。</p>
             </div>
           ) : (
             <div className="flex flex-col gap-1">
-              {events.map((event) => (
-                <button
-                  key={event.id}
-                  className="event-row"
-                  style={{ border: '1px solid #edf0ea', borderRadius: 10, marginBottom: 6 }}
-                  onClick={() => openEvent(event.id, event.softwareId, event.type)}
-                >
-                  <span className={`event-priority ${event.priority.toLowerCase()}`}>{event.priority}</span>
-                  <span className="event-main">
-                    <span className="event-title">{event.title}</span>
-                    <span className="event-meta">
-                      <span className="software">{event.softwareName}</span>
-                      <span>{event.sourceName ?? 'Opsite'}</span>
-                      <span>{relativeTime(event.firstSeenAt)}</span>
+              {items.map((item) => {
+                const severity = notificationSeverityMeta[item.severity];
+                return (
+                  <button
+                    key={item.id}
+                    className={`event-row notification-drawer-row ${item.readAt ? '' : 'unread'}`}
+                    onClick={() => void openItem(item)}
+                  >
+                    <span className={`notification-severity ${severity.className}`}>
+                      <span>{severity.label}</span>
+                      <i />
                     </span>
-                  </span>
-                  {!event.readAt && <span className="unread-dot" />}
-                </button>
-              ))}
+                    <span className="event-main">
+                      <span className="event-title">{item.title}</span>
+                      <span className="event-meta">
+                        <span className="software">{item.targetName}</span>
+                        <span>{targetTypeMeta[item.targetType].label}</span>
+                        <span>{notificationRuleMeta[item.ruleType].label}</span>
+                        <span>{relativeTime(item.createdAt)}</span>
+                      </span>
+                    </span>
+                    {!item.readAt && <span className="unread-dot" />}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -94,14 +115,14 @@ export function NotificationDrawer({ open, onClose }: NotificationDrawerProps) {
             className="text-link"
             onClick={() => {
               onClose();
-              navigate('/events');
+              navigate('/notifications');
             }}
           >
-            事件中心 <ArrowUpRight size={11} />
+            通知中心 <ArrowUpRight size={11} />
           </button>
           <div className="ml-auto flex items-center gap-2">
-            <span className="mono text-[9px] text-[var(--muted-2)]">{events.length} 条最近情报</span>
-            <button className="btn btn-secondary btn-sm" onClick={markAll} disabled={unread === 0}>
+            <span className="mono text-[0.6875rem] text-[var(--muted-2)]">{items.length} 条最近通知</span>
+            <button className="btn btn-secondary btn-sm" onClick={() => void markAll()} disabled={unread === 0}>
               <CheckCheck size={13} /> 全部已读
             </button>
           </div>

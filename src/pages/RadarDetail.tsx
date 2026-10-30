@@ -26,6 +26,7 @@ import {
 } from '../lib/radar';
 import { ActionMenu, EmptyState, LoadingBlock, Modal } from '../components/ui';
 import { RadarDialog } from '../components/RadarDialog';
+import { FollowButton } from '../components/FollowButton';
 
 type RecordInputType = Exclude<RadarRecordType, 'status_change'>;
 
@@ -152,7 +153,7 @@ export function RadarDetail() {
 
   return (
     <div className="page">
-      <button className="mb-3 inline-flex items-center gap-1.5 text-[9.5px] text-[var(--muted)] hover:text-[var(--ink)]" onClick={() => navigate('/radar')}>
+      <button className="mb-3 inline-flex items-center gap-1.5 text-[0.71875rem] text-[var(--muted)] hover:text-[var(--ink)]" onClick={() => navigate('/radar')}>
         <ArrowLeft size={12} /> 返回技术雷达
       </button>
 
@@ -162,11 +163,11 @@ export function RadarDetail() {
         <div className="detail-title">
           <div className="mb-1.5 flex flex-wrap items-center gap-2">
             <span className="eyebrow no-rule">{radarKindMeta[item.kind].label}</span>
-            <span className={`pill pill-${status.className}`} style={{ height: 19, fontSize: 8 }}>
+            <span className={`pill pill-${status.className}`} style={{ height: 19, fontSize: '0.65625rem' }}>
               {status.label}
             </span>
             {item.archivedAt && (
-              <span className="pill pill-neutral" style={{ height: 19, fontSize: 8 }}>
+              <span className="pill pill-neutral" style={{ height: 19, fontSize: '0.65625rem' }}>
                 已归档
               </span>
             )}
@@ -186,6 +187,7 @@ export function RadarDetail() {
         </div>
 
         <div className="detail-actions">
+          <FollowButton targetType="radar" targetId={item.id} />
           {!item.archivedAt && (
             <button className="btn btn-primary" onClick={() => openRecord()}>
               <Plus size={13} /> 添加记录

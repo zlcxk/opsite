@@ -1,6 +1,7 @@
 import { NavLink, Link } from 'react-router-dom';
 import {
   Activity,
+  Bell,
   Boxes,
   ChevronRight,
   Compass,
@@ -8,6 +9,7 @@ import {
   LayoutDashboard,
   NotebookPen,
   Radar,
+  Rss,
   Settings,
   ShieldAlert,
   X,
@@ -26,11 +28,13 @@ const mainNav = [
   { to: '/vulnerabilities', label: '漏洞与修复', icon: ShieldAlert, count: 'pending' as const },
   { to: '/versions', label: '版本与生命周期', icon: GitBranch },
   { to: '/events', label: '情报事件', icon: Activity, count: 'events' as const },
+  { to: '/notifications', label: '通知中心', icon: Bell, count: 'notifications' as const },
 ];
 
 const exploreNav = [
   { to: '/radar', label: '技术雷达', icon: Radar },
   { to: '/discover', label: '技术发现', icon: Compass },
+  { to: '/follows', label: '关注与订阅', icon: Rss },
   { to: '/knowledge', label: '我的知识库', icon: NotebookPen },
 ];
 
@@ -54,10 +58,11 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const openAdvisories = data?.briefing.openAdvisories ?? 0;
   const hasIssue = (data?.briefing.sourceIssues ?? 0) > 0;
 
-  const countFor = (key?: 'software' | 'pending' | 'events') => {
+  const countFor = (key?: 'software' | 'pending' | 'events' | 'notifications') => {
     if (key === 'software') return softwareCount;
     if (key === 'pending') return openAdvisories;
     if (key === 'events') return unread;
+    if (key === 'notifications') return data?.notifications.unread ?? 0;
     return null;
   };
 
@@ -127,7 +132,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           <div className="watch-status-head">
             <span className={`live-dot ${hasIssue ? 'warn' : ''}`} />
             {hasIssue ? '采集器有异常' : '采集器运行中'}
-            <span className="ml-auto" style={{ fontSize: 8, color: '#5f7266' }}>
+            <span className="ml-auto" style={{ fontSize: '0.65625rem', color: '#5f7266' }}>
               {unread > 0 ? `${unread} 条未读` : '已读'}
             </span>
           </div>

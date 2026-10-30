@@ -244,7 +244,7 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
 
   const footer = (
     <>
-      <span className="mr-auto hidden text-[10px] text-[var(--muted)] sm:block">
+      <span className="mr-auto hidden text-[0.75rem] text-[var(--muted)] sm:block">
         保存后会立即触发一次后台采集
       </span>
       <button className="btn btn-ghost" type="button" onClick={onClose}>
@@ -343,14 +343,14 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
                   <Logo name={item.name} logoUrl={item.logoSlug ? `https://cdn.simpleicons.org/${item.logoSlug}` : null} />
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
-                      <strong className="truncate text-[12.5px] font-[560]">{item.name}</strong>
+                      <strong className="truncate text-[0.90625rem] font-[560]">{item.name}</strong>
                       <span
                         className="category-dot"
                         style={{ background: categoryColor(item.category) }}
                       />
                     </span>
-                    <span className="mt-0.5 block text-[9px] text-[var(--muted)]">{item.category}</span>
-                    <span className="mt-1.5 line-clamp-2 block text-[9.5px] leading-relaxed text-[var(--muted)]">
+                    <span className="mt-0.5 block text-[0.6875rem] text-[var(--muted)]">{item.category}</span>
+                    <span className="mt-1.5 line-clamp-2 block text-[0.71875rem] leading-relaxed text-[var(--muted)]">
                       {item.description}
                     </span>
                     <span className="mt-2 flex flex-wrap gap-1">
@@ -376,8 +376,8 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
                 <Sparkles size={15} />
               </span>
               <div>
-                <div className="text-[11.5px] font-[560]">为内部工具或缺少模板的软件创建条目</div>
-                <p className="mt-1 text-[9.5px] leading-relaxed text-[var(--muted)]">
+                <div className="text-[0.875rem] font-[560]">为内部工具或缺少模板的软件创建条目</div>
+                <p className="mt-1 text-[0.71875rem] leading-relaxed text-[var(--muted)]">
                   自定义软件不会自动获得生命周期或漏洞匹配能力，需要你提供可靠的数据源标识。
                 </p>
               </div>
@@ -387,12 +387,12 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
               <div className="mb-4 flex items-center gap-3 rounded-xl border border-[var(--line)] bg-white p-3">
                 <Logo name={selected.name} logoUrl={selected.logoSlug ? `https://cdn.simpleicons.org/${selected.logoSlug}` : null} size="lg" />
                 <div className="min-w-0 flex-1">
-                  <div className="font-display text-[16px] font-[570] tracking-[-0.02em]">{selected.name}</div>
-                  <div className="mt-1 text-[10px] text-[var(--muted)]">
+                  <div className="font-display text-[1.125rem] font-[570] tracking-[-0.02em]">{selected.name}</div>
+                  <div className="mt-1 text-[0.75rem] text-[var(--muted)]">
                     {selected.category}
                     {selected.repo ? ` · ${selected.repo.replace('https://github.com/', '')}` : ''}
                   </div>
-                  <p className="mt-1.5 text-[9.5px] leading-relaxed text-[var(--muted)]">{selected.description}</p>
+                  <p className="mt-1.5 text-[0.71875rem] leading-relaxed text-[var(--muted)]">{selected.description}</p>
                 </div>
               </div>
             )
@@ -559,19 +559,19 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
                     />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-2">
-                        <strong className="text-[11px] font-[550]">{draft.label}</strong>
+                        <strong className="text-[0.84375rem] font-[550]">{draft.label}</strong>
                         <span className="tag">{draft.type}</span>
                         {draft.type === 'cisa_kev' && draft.enabled && (
-                          <span className="pill pill-calm" style={{ height: 18, fontSize: 8 }}>
+                          <span className="pill pill-calm" style={{ height: 18, fontSize: '0.65625rem' }}>
                             <Check size={9} /> 建议开启
                           </span>
                         )}
                       </span>
-                      <span className="mt-1 block text-[9px] text-[var(--muted)]">
+                      <span className="mt-1 block text-[0.6875rem] text-[var(--muted)]">
                         {sourceDescriptions[draft.type]}
                       </span>
                       {mode === 'catalog' && (
-                        <span className="mt-1 block font-mono text-[8px] text-[var(--muted-2)]">
+                        <span className="mt-1 block font-mono text-[0.65625rem] text-[var(--muted-2)]">
                           {summarizeConfig(draft.type, draft.config)}
                         </span>
                       )}

@@ -1,5 +1,6 @@
 import type { EventType, IntelEvent, Priority, UserEventStatus } from '../../shared/types.js';
 import { db, nowIso } from '../db.js';
+import { dispatchEventCreated, dispatchEventUpdated } from './notifications.js';
 
 export interface EventInput {
   type: EventType;
@@ -12,12 +13,19 @@ export interface EventInput {
   sourceUrl?: string | null;
   upstreamPublishedAt?: string | null;
   dedupeKey: string;
+  /** Initial backfill runs stay visible in the timeline but produce no alerts. */
+  notify?: boolean;
 }
 
 export function upsertEvent(input: EventInput): { id: string; created: boolean } {
   const existing = db
-    .prepare('SELECT id FROM intelligence_event WHERE dedupe_key = ?')
-    .get(input.dedupeKey) as { id: string } | undefined;
+    .prepare(
+      `SELECT id, title, priority, upstream_published_at
+       FROM intelligence_event WHERE dedupe_key = ?`,
+    )
+    .get(input.dedupeKey) as
+    | { id: string; title: string; priority: Priority; upstream_published_at: string | null }
+    | undefined;
   const timestamp = nowIso();
 
   if (existing) {
@@ -37,6 +45,18 @@ export function upsertEvent(input: EventInput): { id: string; created: boolean }
       input.refId ?? null,
       existing.id,
     );
+    if (input.notify !== false) {
+      try {
+        dispatchEventUpdated(input, existing.id, {
+          title: existing.title,
+          priority: existing.priority,
+          upstreamPublishedAt: existing.upstream_published_at,
+        });
+      } catch (error) {
+        // Alerts must never block intelligence collection.
+        console.error('[notifications] event update dispatch failed', error);
+      }
+    }
     return { id: existing.id, created: false };
   }
 
@@ -65,15 +85,64 @@ export function upsertEvent(input: EventInput): { id: string; created: boolean }
     `INSERT INTO user_event_state (event_id, read_at, status, updated_at)
      VALUES (?, NULL, 'new', ?) ON CONFLICT(event_id) DO NOTHING`,
   ).run(id, timestamp);
+  if (input.notify !== false) {
+    try {
+      dispatchEventCreated(input, id);
+    } catch (error) {
+      // Alerts must never block intelligence collection.
+      console.error('[notifications] event create dispatch failed', error);
+    }
+  }
   return { id, created: true };
 }
 
 export function updateEventPriority(refId: string, priority: Priority): void {
-  db.prepare('UPDATE intelligence_event SET priority = ? WHERE ref_id = ? AND type = ?').run(
-    priority,
-    refId,
-    'vulnerability',
-  );
+  const existing = db
+    .prepare(
+      `SELECT id, type, software_id, ref_id, title, summary, priority, source_name, source_url,
+              upstream_published_at
+       FROM intelligence_event WHERE ref_id = ? AND type = 'vulnerability'`,
+    )
+    .get(refId) as
+    | {
+        id: string;
+        type: EventType;
+        software_id: string;
+        ref_id: string | null;
+        title: string;
+        summary: string | null;
+        priority: Priority;
+        source_name: string | null;
+        source_url: string | null;
+        upstream_published_at: string | null;
+      }
+    | undefined;
+  if (!existing) return;
+  db.prepare('UPDATE intelligence_event SET priority = ? WHERE id = ?').run(priority, existing.id);
+  if (existing.priority === priority) return;
+  try {
+    dispatchEventUpdated(
+      {
+        type: 'vulnerability',
+        softwareId: existing.software_id,
+        refId: existing.ref_id,
+        title: existing.title,
+        summary: existing.summary,
+        priority,
+        sourceName: existing.source_name,
+        sourceUrl: existing.source_url,
+        upstreamPublishedAt: existing.upstream_published_at,
+      },
+      existing.id,
+      {
+        title: existing.title,
+        priority: existing.priority,
+        upstreamPublishedAt: existing.upstream_published_at,
+      },
+    );
+  } catch (error) {
+    console.error('[notifications] priority update dispatch failed', error);
+  }
 }
 
 interface EventRow {

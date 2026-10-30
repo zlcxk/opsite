@@ -27,6 +27,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAppData } from '../contexts/AppDataContext';
 import { EmptyState, LoadingBlock } from '../components/ui';
 import { DiscoveryImportDialog } from '../components/DiscoveryImportDialog';
+import { FollowButton } from '../components/FollowButton';
 
 export function DiscoverDetail() {
   const { id } = useParams();
@@ -109,7 +110,7 @@ export function DiscoverDetail() {
   return (
     <div className="page">
       <button
-        className="mb-3 inline-flex items-center gap-1.5 text-[9.5px] text-[var(--muted)] hover:text-[var(--ink)]"
+        className="mb-3 inline-flex items-center gap-1.5 text-[0.71875rem] text-[var(--muted)] hover:text-[var(--ink)]"
         onClick={() => navigate('/discover')}
       >
         <ArrowLeft size={12} /> 返回技术发现
@@ -124,7 +125,7 @@ export function DiscoverDetail() {
             <span className="eyebrow no-rule" style={{ color: categoryColor(candidate.category) }}>
               {candidate.category}
             </span>
-            <span className={`pill pill-${status.className}`} style={{ height: 19, fontSize: 8 }}>
+            <span className={`pill pill-${status.className}`} style={{ height: 19, fontSize: '0.65625rem' }}>
               {status.label}
             </span>
           </div>
@@ -148,6 +149,7 @@ export function DiscoverDetail() {
         </div>
 
         <div className="detail-actions">
+          <FollowButton targetType="discovery" targetId={candidate.id} />
           {candidate.status === 'pending' && (
             <>
               <button className="btn btn-primary" onClick={() => setImporting(candidate)}>

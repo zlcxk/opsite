@@ -114,6 +114,7 @@ function handleLifecycle(
   software: SoftwareRow,
   source: SourceRow,
   rows: RawLifecycle[],
+  initial: boolean,
 ): { createdEvents: number; created: number } {
   let createdEvents = 0;
   let created = 0;
@@ -174,6 +175,7 @@ function handleLifecycle(
         sourceUrl: row.sourceUrl,
         upstreamPublishedAt: row.eolDate,
         dedupeKey: `lifecycle:${software.id}:${row.cycle}:${row.supportStatus}:${row.eolDate ?? ''}`,
+        notify: !initial,
       });
       createdEvents += 1;
     }
@@ -239,6 +241,7 @@ function handleReleases(
           sourceUrl: row.url,
           upstreamPublishedAt: row.publishedAt,
           dedupeKey: `release:${software.id}:${row.version}`,
+          notify: !initial,
         });
         createdEvents += 1;
       }
@@ -276,6 +279,7 @@ function handleAdvisories(
       sourceUrl: result.url,
       upstreamPublishedAt: result.publishedAt,
       dedupeKey: `vulnerability:${software.id}:${result.id}`,
+      notify: !initial,
     });
     createdEvents += 1;
   }
@@ -322,7 +326,7 @@ function refreshSoftwareLatest(softwareId: string): void {
  * sync and is idempotent: it updates the existing event instead of creating a
  * second event for the same advisory.
  */
-function refreshAdvisoryEvents(softwareId: string): void {
+function refreshAdvisoryEvents(softwareId: string, notify: boolean): void {
   const rows = db
     .prepare(
       `SELECT a.id, a.identifier, a.title, a.severity, a.score, a.kev, a.priority,
@@ -364,6 +368,7 @@ function refreshAdvisoryEvents(softwareId: string): void {
         ? 'https://www.cisa.gov/known-exploited-vulnerabilities-catalog'
         : null,
       dedupeKey: `vulnerability:${softwareId}:${row.id}`,
+      notify,
     });
   }
 }
@@ -430,7 +435,7 @@ export async function syncSoftware(
         let eventCount = 0;
 
         if (result.lifecycle?.length) {
-          const lifecycleResult = handleLifecycle(software, source, result.lifecycle);
+          const lifecycleResult = handleLifecycle(software, source, result.lifecycle, initial);
           itemsNew += lifecycleResult.created;
           eventCount += lifecycleResult.createdEvents;
         }
@@ -471,7 +476,7 @@ export async function syncSoftware(
     }
 
     refreshAdvisoryInsights(softwareId);
-    refreshAdvisoryEvents(softwareId);
+    refreshAdvisoryEvents(softwareId, advisoryCountBefore > 0);
     refreshHighestAffectedEventPriority(softwareId);
     refreshSoftwareLatest(softwareId);
 

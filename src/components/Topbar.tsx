@@ -15,6 +15,8 @@ const pageNames: Array<[RegExp, string]> = [
   [/^\/vulnerabilities$/, '漏洞与修复'],
   [/^\/versions$/, '版本与生命周期'],
   [/^\/events$/, '情报事件'],
+  [/^\/notifications$/, '通知中心'],
+  [/^\/follows$/, '关注与订阅'],
   [/^\/radar\/[^/]+$/, '雷达条目'],
   [/^\/radar$/, '技术雷达'],
   [/^\/discover\/[^/]+$/, '候选详情'],
@@ -39,7 +41,7 @@ export function Topbar({ onMenu }: TopbarProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const pageName = pageNames.find(([pattern]) => pattern.test(location.pathname))?.[1] ?? '工作台';
-  const unread = data?.briefing.unread ?? 0;
+  const unread = data?.notifications.unread ?? 0;
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(nowParts()), 30_000);
@@ -65,7 +67,7 @@ export function Topbar({ onMenu }: TopbarProps) {
             <Menu size={18} />
           </button>
           <div className="topbar-crumb">
-            <span className="mono text-[9px] tracking-[0.12em] uppercase">Desk</span>
+            <span className="mono text-[0.6875rem] tracking-[0.12em] uppercase">Desk</span>
             <span>/</span>
             <strong>{pageName}</strong>
           </div>

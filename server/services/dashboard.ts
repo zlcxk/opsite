@@ -2,6 +2,7 @@ import type { DashboardBriefing, DashboardData } from '../../shared/types.js';
 import { db, getSetting } from '../db.js';
 import { compareVersions } from '../lib/version.js';
 import { listEvents } from './events.js';
+import { getNotificationSummary } from './notifications.js';
 import { listRadar } from './notes.js';
 import { listSoftware } from './software.js';
 import { getNextSyncAt, isSchedulerEnabled } from './scheduler.js';
@@ -72,6 +73,7 @@ export function getDashboard(): DashboardData {
   return {
     briefing,
     events,
+    notifications: getNotificationSummary(),
     software,
     radar: radarItems.slice(0, 6),
     radarCount: radarItems.length,

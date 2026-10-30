@@ -16,6 +16,8 @@ export function getPublicSettings(): Settings {
     nvdKeyConfigured: Boolean(process.env.NVD_API_KEY),
     emailEnabled: bool(values, 'email_enabled', false),
     emailTo: values.email_to || '',
+    emailMode: values.email_mode === 'digest' ? 'digest' : 'realtime',
+    digestTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(values.digest_time || '') ? values.digest_time : '09:00',
     notifyP0: bool(values, 'notify_p0', true),
     notifyP1: bool(values, 'notify_p1', true),
     notifyEol: bool(values, 'notify_eol', true),
@@ -30,6 +32,8 @@ export interface SettingsPatch {
   syncCron?: string;
   emailEnabled?: boolean;
   emailTo?: string;
+  emailMode?: 'realtime' | 'digest';
+  digestTime?: string;
   notifyP0?: boolean;
   notifyP1?: boolean;
   notifyEol?: boolean;
@@ -43,6 +47,8 @@ export function updateSettings(patch: SettingsPatch): void {
     ['syncEnabled', 'sync_enabled'],
     ['emailEnabled', 'email_enabled'],
     ['emailTo', 'email_to'],
+    ['emailMode', 'email_mode'],
+    ['digestTime', 'digest_time'],
     ['notifyP0', 'notify_p0'],
     ['notifyP1', 'notify_p1'],
     ['notifyEol', 'notify_eol'],

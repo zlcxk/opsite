@@ -8,9 +8,11 @@ import {
   markInterruptedDiscoveryJobs,
   startDiscoveryRun,
 } from './discovery.js';
+import { processEmailQueue } from './notifications.js';
 
 let syncTask: ScheduledTask | null = null;
 let discoveryTask: ScheduledTask | null = null;
+let notificationTask: ScheduledTask | null = null;
 let running = false;
 let lastRunAt: string | null = null;
 
@@ -124,6 +126,28 @@ function startDiscoverySchedule(): void {
   );
 }
 
+/**
+ * Email delivery is deliberately independent of collection schedules. It runs
+ * on its own minute tick even when DISABLE_SCHEDULER stops sync and discovery,
+ * because in-app notifications are already stored and only the transport is
+ * asynchronous.
+ */
+function startNotificationSchedule(): void {
+  if (process.env.DISABLE_EMAIL_QUEUE === 'true') {
+    console.log('[email-scheduler] disabled by DISABLE_EMAIL_QUEUE=true');
+    return;
+  }
+  notificationTask = cron.schedule('* * * * *', () => {
+    void processEmailQueue().catch((error) => {
+      console.error('[email-scheduler] delivery tick failed', error);
+    });
+  });
+  void processEmailQueue().catch((error) => {
+    console.error('[email-scheduler] startup delivery failed', error);
+  });
+  console.log('[email-scheduler] enabled with "* * * * *"');
+}
+
 export function startScheduler(): void {
   stopScheduler();
 
@@ -131,6 +155,7 @@ export function startScheduler(): void {
   // scheduled runs are disabled, otherwise the UI would report it as running forever.
   if (!isDiscoveryRunning()) markInterruptedDiscoveryJobs();
 
+  startNotificationSchedule();
   if (process.env.DISABLE_SCHEDULER === 'true') return;
 
   startSyncSchedule();
@@ -147,6 +172,11 @@ export function stopScheduler(): void {
     discoveryTask.stop();
     discoveryTask.destroy();
     discoveryTask = null;
+  }
+  if (notificationTask) {
+    notificationTask.stop();
+    notificationTask.destroy();
+    notificationTask = null;
   }
 }
 

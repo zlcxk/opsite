@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_DISCOVERY_RULES, DEFAULT_DISCOVERY_SOURCES } from './services/discovery-config.js';
+import { DEFAULT_GLOBAL_RULES } from './services/notification-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -180,6 +181,86 @@ CREATE TABLE IF NOT EXISTS user_event_state (
   event_id TEXT PRIMARY KEY REFERENCES intelligence_event(id) ON DELETE CASCADE,
   read_at TEXT,
   status TEXT NOT NULL DEFAULT 'new',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS follow_target (
+  id TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  target_name TEXT NOT NULL,
+  target_subtitle TEXT,
+  target_url TEXT,
+  software_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(target_type, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_follow_type ON follow_target(target_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS subscription_rule (
+  id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  event_type TEXT NOT NULL,
+  in_app INTEGER NOT NULL DEFAULT 0,
+  email INTEGER NOT NULL DEFAULT 0,
+  min_severity TEXT NOT NULL DEFAULT 'all',
+  updated_at TEXT NOT NULL,
+  UNIQUE(scope_type, scope_id, event_type)
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_scope ON subscription_rule(scope_type, scope_id);
+
+CREATE TABLE IF NOT EXISTS notification (
+  id TEXT PRIMARY KEY,
+  rule_type TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'normal',
+  title TEXT NOT NULL,
+  body TEXT,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  target_name TEXT NOT NULL,
+  event_id TEXT,
+  software_id TEXT,
+  link TEXT,
+  source_name TEXT,
+  source_url TEXT,
+  in_app INTEGER NOT NULL DEFAULT 1,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notification_created ON notification(in_app, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_unread ON notification(in_app, read_at, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_target ON notification(target_type, target_id);
+
+CREATE TABLE IF NOT EXISTS notification_delivery (
+  id TEXT PRIMARY KEY,
+  notification_id TEXT NOT NULL REFERENCES notification(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL DEFAULT 'email',
+  recipient TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_attempt_at TEXT,
+  sent_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(notification_id, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_due ON notification_delivery(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_created ON notification_delivery(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS smtp_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  host TEXT NOT NULL DEFAULT '',
+  port INTEGER NOT NULL DEFAULT 587,
+  encryption TEXT NOT NULL DEFAULT 'starttls',
+  username TEXT NOT NULL DEFAULT '',
+  password_ciphertext TEXT,
+  from_name TEXT NOT NULL DEFAULT 'Opsite',
+  from_email TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
 
@@ -379,6 +460,24 @@ for (const rule of DEFAULT_DISCOVERY_RULES) {
     rule.category,
     rule.enabled ? 1 : 0,
     seedTimestamp,
+    seedTimestamp,
+  );
+}
+
+// Global subscription defaults are seeded once. Existing databases keep any
+// choices the user has already made.
+for (const rule of DEFAULT_GLOBAL_RULES) {
+  db.prepare(
+    `INSERT INTO subscription_rule
+      (id, scope_type, scope_id, event_type, in_app, email, min_severity, updated_at)
+     VALUES (?, 'global', '', ?, ?, ?, ?, ?)
+     ON CONFLICT(scope_type, scope_id, event_type) DO NOTHING`,
+  ).run(
+    `global:${rule.eventType}`,
+    rule.eventType,
+    rule.inApp ? 1 : 0,
+    rule.email ? 1 : 0,
+    rule.minSeverity,
     seedTimestamp,
   );
 }

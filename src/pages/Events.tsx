@@ -325,7 +325,7 @@ export function Events() {
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[9px] text-[var(--muted-2)]">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[0.6875rem] text-[var(--muted-2)]">
         <span>共 {filtered.length} 条事件 · 同一漏洞的多来源信息合并为一个主事件</span>
         <span>事件状态与上游公告更新相互独立</span>
       </div>

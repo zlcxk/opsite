@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Archive,
@@ -51,6 +51,7 @@ import { Logo } from '../components/Logo';
 import { ActionMenu, EmptyState, LoadingBlock, Modal } from '../components/ui';
 import { EditSoftwareDialog } from '../components/EditSoftwareDialog';
 import { AdvisoryDrawer } from '../components/AdvisoryDrawer';
+import { FollowButton } from '../components/FollowButton';
 
 const tabs = [
   ['overview', '概览'],
@@ -94,6 +95,20 @@ export function SoftwareDetail() {
 
   const software = data?.software;
   useDocumentTitle(software?.name ?? '软件详情');
+
+  const advisoryParam = searchParams.get('advisory');
+  useEffect(() => {
+    if (advisoryParam) setSelectedAdvisory(advisoryParam);
+  }, [advisoryParam]);
+
+  const closeAdvisory = () => {
+    setSelectedAdvisory(null);
+    if (searchParams.get('advisory')) {
+      const params = new URLSearchParams(searchParams);
+      params.delete('advisory');
+      setSearchParams(params, { replace: true });
+    }
+  };
 
   const openAdvisories = useMemo(
     () => (data?.advisories ?? []).filter((item) => openStatuses.includes(item.status)),
@@ -227,7 +242,7 @@ export function SoftwareDetail() {
 
   return (
     <div className="page">
-      <button className="mb-3 inline-flex items-center gap-1.5 text-[9.5px] text-[var(--muted)] hover:text-[var(--ink)]" onClick={() => navigate(-1)}>
+      <button className="mb-3 inline-flex items-center gap-1.5 text-[0.71875rem] text-[var(--muted)] hover:text-[var(--ink)]" onClick={() => navigate(-1)}>
         <ArrowLeft size={12} /> 返回
       </button>
 
@@ -240,9 +255,9 @@ export function SoftwareDetail() {
             <div className="mb-1.5 flex flex-wrap items-center gap-2">
               <span className="eyebrow no-rule">{software.category}</span>
               {software.watchStatus === 'paused' && (
-                <span className="pill pill-neutral" style={{ height: 19, fontSize: 8 }}>已暂停</span>
+                <span className="pill pill-neutral" style={{ height: 19, fontSize: '0.65625rem' }}>已暂停</span>
               )}
-              <span className={`pill pill-${watchLevelMeta[software.watchLevel].className}`} style={{ height: 19, fontSize: 8 }}>
+              <span className={`pill pill-${watchLevelMeta[software.watchLevel].className}`} style={{ height: 19, fontSize: '0.65625rem' }}>
                 {watchLevelMeta[software.watchLevel].label}
               </span>
             </div>
@@ -265,12 +280,13 @@ export function SoftwareDetail() {
               )}
             </div>
             {software.description && (
-              <p className="mt-2 max-w-[620px] text-[10.5px] leading-6 text-[var(--muted)]">{software.description}</p>
+              <p className="mt-2 max-w-[620px] text-[0.8125rem] leading-6 text-[var(--muted)]">{software.description}</p>
             )}
           </div>
         </div>
 
         <div className="detail-actions">
+          <FollowButton targetType="software" targetId={software.id} />
           <button className="btn btn-secondary" onClick={() => void syncAll()} disabled={syncing !== null}>
             <RefreshCw size={13} className={syncing === 'all' ? 'animate-spin' : ''} />
             {syncing === 'all' ? '采集中…' : '立即同步'}
@@ -318,7 +334,7 @@ export function SoftwareDetail() {
           <span className="stat-label">
             <Clock3 size={10} /> 当前版本生命周期
           </span>
-          <span className={`stat-value ${lifecycleMeta.className === 'danger' ? 'text-[var(--critical)]' : lifecycleMeta.className === 'warn' ? 'text-[var(--high)]' : ''}`} style={{ fontSize: 19 }}>
+          <span className={`stat-value ${lifecycleMeta.className === 'danger' ? 'text-[var(--critical)]' : lifecycleMeta.className === 'warn' ? 'text-[var(--high)]' : ''}`} style={{ fontSize: '1.3125rem' }}>
             {lifecycleMeta.label}
           </span>
           <div className="stat-foot">
@@ -331,7 +347,7 @@ export function SoftwareDetail() {
           <span className="stat-label">
             <Tag size={10} /> 当前 / 最新稳定
           </span>
-          <span className="stat-value" style={{ fontSize: 19 }}>
+          <span className="stat-value" style={{ fontSize: '1.3125rem' }}>
             {software.currentVersion ?? '待配置'}
             <small>/ {software.latestVersion ?? '未采集'}</small>
           </span>
@@ -457,7 +473,7 @@ export function SoftwareDetail() {
                           <strong>
                             <span className="font-mono">{release.version}</span>
                             {release.channel === 'prerelease' && (
-                              <span className="pill pill-note ml-2" style={{ height: 16, fontSize: 7 }}>预发布</span>
+                              <span className="pill pill-note ml-2" style={{ height: 16, fontSize: '0.65625rem' }}>预发布</span>
                             )}
                           </strong>
                           <span>{release.title || '无发布说明'} · {formatDate(release.publishedAt)}</span>
@@ -488,7 +504,7 @@ export function SoftwareDetail() {
               <div className="panel-body">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <span className={`pill pill-${lifecycleMeta.className}`}>{lifecycleMeta.label}</span>
-                  <span className="font-mono text-[9px] text-[var(--muted)]">
+                  <span className="font-mono text-[0.6875rem] text-[var(--muted)]">
                     {software.lifecycle.cycle ? `cycle ${software.lifecycle.cycle}` : 'no matching cycle'}
                   </span>
                 </div>
@@ -518,7 +534,7 @@ export function SoftwareDetail() {
                   </a>
                 )}
                 {software.lifecycle.status === 'unknown' && (
-                  <p className="mt-3 text-[9px] leading-5 text-[var(--muted-2)]">
+                  <p className="mt-3 text-[0.6875rem] leading-5 text-[var(--muted-2)]">
                     没有足够可靠的来源数据，因此不显示推断的 EOL。
                   </p>
                 )}
@@ -543,7 +559,7 @@ export function SoftwareDetail() {
                           {source.enabled ? (source.lastStatus === 'ok' ? `正常 · ${relativeTime(source.lastSyncAt)}` : source.lastStatus === 'error' ? '采集异常' : '尚未同步') : '已停用'}
                         </span>
                       </div>
-                      <span className="text-[8px] text-[var(--muted-2)]">{source.lastItemCount} 条</span>
+                      <span className="text-[0.65625rem] text-[var(--muted-2)]">{source.lastItemCount} 条</span>
                     </div>
                   ))}
                 </div>
@@ -555,7 +571,7 @@ export function SoftwareDetail() {
                 <div className="panel-head">
                   <h3>个人备注</h3>
                 </div>
-                <div className="panel-body text-[10.5px] leading-6 text-[var(--muted)]">{software.notes}</div>
+                <div className="panel-body text-[0.8125rem] leading-6 text-[var(--muted)]">{software.notes}</div>
               </section>
             )}
           </div>
@@ -592,13 +608,13 @@ export function SoftwareDetail() {
                           <div className="release-title">
                             <span className="release-version">{release.version}</span>
                             {release.channel === 'prerelease' && (
-                              <span className="pill pill-note" style={{ height: 17, fontSize: 7.5 }}>预发布</span>
+                              <span className="pill pill-note" style={{ height: 17, fontSize: '0.65625rem' }}>预发布</span>
                             )}
                             {hasUpdate(release.version, software.currentVersion) && release.channel === 'stable' && (
                               <span className="update-pill">领先当前</span>
                             )}
                             {release.version === software.currentVersion && (
-                              <span className="pill pill-signal" style={{ height: 17, fontSize: 7.5 }}>当前使用</span>
+                              <span className="pill pill-signal" style={{ height: 17, fontSize: '0.65625rem' }}>当前使用</span>
                             )}
                           </div>
                           {release.title && <div className="release-meta">{release.title}</div>}
@@ -642,8 +658,8 @@ export function SoftwareDetail() {
               <div className="lifecycle-software">
                 <GitBranch size={13} className="text-[var(--muted)]" />
                 <strong>{software.name}</strong>
-                <span className="text-[9px] text-[var(--muted)]">当前 {software.currentVersion ?? '未配置'}</span>
-                <span className="ml-auto text-[8.5px] text-[var(--muted-2)]">
+                <span className="text-[0.6875rem] text-[var(--muted)]">当前 {software.currentVersion ?? '未配置'}</span>
+                <span className="ml-auto text-[0.65625rem] text-[var(--muted-2)]">
                   {data.lifecycle.length} 个周期 · 来源日期未做推断
                 </span>
               </div>
@@ -662,10 +678,10 @@ export function SoftwareDetail() {
                     <span className="lifecycle-cycle">{row.cycle}</span>
                     <span className="muted-cell hide-md">{formatDate(row.releaseDate)}</span>
                     <span className="flex flex-wrap items-center gap-1.5">
-                      <span className={`pill pill-${meta.className}`} style={{ height: 18, fontSize: 7.5 }}>
+                      <span className={`pill pill-${meta.className}`} style={{ height: 18, fontSize: '0.65625rem' }}>
                         {meta.label}
                       </span>
-                      {row.isCurrent && <span className="pill pill-signal" style={{ height: 18, fontSize: 7.5 }}>当前</span>}
+                      {row.isCurrent && <span className="pill pill-signal" style={{ height: 18, fontSize: '0.65625rem' }}>当前</span>}
                     </span>
                     <span className={row.supportStatus === 'eol' ? 'text-[var(--critical)]' : 'muted-cell'}>
                       {row.eolDate
@@ -702,7 +718,7 @@ export function SoftwareDetail() {
               </button>
             </div>
             <div className="filter-spacer" />
-            <span className="text-[9px] text-[var(--muted-2)]">
+            <span className="text-[0.6875rem] text-[var(--muted-2)]">
               影响判断基于当前版本 {software.currentVersion ?? '（未配置）'}
             </span>
           </div>
@@ -787,7 +803,7 @@ export function SoftwareDetail() {
                           <strong>{note.title}</strong>
                           <span>{note.content.slice(0, 120) || '暂无内容'}</span>
                         </div>
-                        <span className="shrink-0 text-[8px] text-[var(--muted-2)]">{formatDate(note.updatedAt)}</span>
+                        <span className="shrink-0 text-[0.65625rem] text-[var(--muted-2)]">{formatDate(note.updatedAt)}</span>
                       </div>
                     ))}
                 </div>
@@ -907,7 +923,7 @@ export function SoftwareDetail() {
                       <Pencil size={11} /> 修改配置
                     </button>
                     {source.enabled && source.lastStatus === 'error' && (
-                      <span className="text-[9px] text-[var(--muted-2)]">失败时保留上一次成功数据</span>
+                      <span className="text-[0.6875rem] text-[var(--muted-2)]">失败时保留上一次成功数据</span>
                     )}
                   </div>
                 </div>
@@ -956,7 +972,7 @@ export function SoftwareDetail() {
 
       <AdvisoryDrawer
         advisoryId={selectedAdvisory}
-        onClose={() => setSelectedAdvisory(null)}
+        onClose={closeAdvisory}
         onUpdated={() => void refetch(true)}
       />
 
@@ -991,7 +1007,7 @@ function JobRow({ job }: { job: SyncJob }) {
   const triggerLabel = job.trigger === 'manual' ? '手动' : job.trigger === 'initial' ? '首次' : '定时';
   return (
     <div className="jobs-table-row">
-      <span className="font-mono text-[9px] text-[var(--muted)]">{formatDateTime(job.startedAt)}</span>
+      <span className="font-mono text-[0.6875rem] text-[var(--muted)]">{formatDateTime(job.startedAt)}</span>
       <span className="cell-main">
         <strong>{job.sourceLabel ?? sourceTypeLabel(job.sourceType ?? '')}</strong>
         <span>{job.sourceType ? sourceTypeLabel(job.sourceType) : '全部数据源'}</span>
@@ -1006,7 +1022,7 @@ function JobRow({ job }: { job: SyncJob }) {
         {job.itemsFound} / +{job.itemsNew}
       </span>
       <span className="cell-mono">{duration === null ? '—' : `${duration}s`}</span>
-      <span className="truncate text-[9px] text-[var(--critical)]" title={job.error ?? ''}>
+      <span className="truncate text-[0.6875rem] text-[var(--critical)]" title={job.error ?? ''}>
         {job.error ?? '—'}
       </span>
     </div>

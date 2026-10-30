@@ -10,6 +10,8 @@ import { SoftwareDetail } from './pages/SoftwareDetail';
 import { Vulnerabilities } from './pages/Vulnerabilities';
 import { Versions } from './pages/Versions';
 import { Events } from './pages/Events';
+import { Notifications } from './pages/Notifications';
+import { Follows } from './pages/Follows';
 import { Radar } from './pages/Radar';
 import { RadarDetail } from './pages/RadarDetail';
 import { Discover } from './pages/Discover';
@@ -49,6 +51,8 @@ export default function App() {
               <Route path="vulnerabilities" element={<Vulnerabilities />} />
               <Route path="versions" element={<Versions />} />
               <Route path="events" element={<Events />} />
+              <Route path="notifications" element={<Notifications />} />
+              <Route path="follows" element={<Follows />} />
               <Route path="radar" element={<Radar />} />
               <Route path="radar/:id" element={<RadarDetail />} />
               <Route path="discover" element={<Discover />} />

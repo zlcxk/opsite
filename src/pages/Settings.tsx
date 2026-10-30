@@ -18,6 +18,7 @@ import { useAppData } from '../contexts/AppDataContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime, relativeTime } from '../lib/format';
 import { PageHeader } from '../components/ui';
+import { NotificationSettings } from '../components/NotificationSettingsPanel';
 
 type Section = 'sync' | 'notify' | 'data' | 'about';
 
@@ -39,8 +40,6 @@ const cronPresets = [
   { value: '0 3 * * 1', label: '每周一 03:00' },
 ];
 
-type NotifyKey = 'notifyP0' | 'notifyP1' | 'notifyEol' | 'notifyRelease';
-
 function pickSettings(value: SettingsResponse): SettingsType {
   return {
     syncEnabled: value.syncEnabled,
@@ -49,6 +48,8 @@ function pickSettings(value: SettingsResponse): SettingsType {
     nvdKeyConfigured: value.nvdKeyConfigured,
     emailEnabled: value.emailEnabled,
     emailTo: value.emailTo,
+    emailMode: value.emailMode,
+    digestTime: value.digestTime,
     notifyP0: value.notifyP0,
     notifyP1: value.notifyP1,
     notifyEol: value.notifyEol,
@@ -160,12 +161,12 @@ export function Settings() {
               </button>
             );
           })}
-          <div className="mt-4 rounded-lg border border-[var(--line)] bg-white/55 p-3">
-            <div className="flex items-center gap-1.5 text-[8.5px] uppercase tracking-[0.08em] text-[var(--muted-2)]">
+          <div className="settings-nav-status mt-4 rounded-lg border border-[var(--line)] bg-white/55 p-3">
+            <div className="flex items-center gap-1.5 text-[0.65625rem] uppercase tracking-[0.08em] text-[var(--muted-2)]">
               <span className={`live-dot ${data.scheduler.enabled ? '' : 'warn'}`} />
               {data.scheduler.enabled ? 'Scheduler active' : 'Scheduler paused'}
             </div>
-            <p className="mt-2 text-[9px] leading-5 text-[var(--muted)]">
+            <p className="mt-2 text-[0.6875rem] leading-5 text-[var(--muted)]">
               {data.scheduler.enabled
                 ? `下次自动采集 ${formatDateTime(data.scheduler.nextSyncAt)}`
                 : '定时采集当前未运行，仍可手动同步。'}
@@ -215,7 +216,7 @@ export function Settings() {
                         <button
                           key={preset.value}
                           className={`chip ${form.syncCron === preset.value ? 'active' : ''}`}
-                          style={{ height: 24, fontSize: 8.5 }}
+                          style={{ height: 24, fontSize: '0.65625rem' }}
                           onClick={() => set('syncCron', preset.value)}
                         >
                           {preset.label}
@@ -240,7 +241,7 @@ export function Settings() {
                       onChange={(event) => set('staleAfterHours', Number(event.target.value))}
                       aria-label="数据过期小时数"
                     />
-                    <span className="text-[10px] text-[var(--muted)]">小时</span>
+                    <span className="text-[0.75rem] text-[var(--muted)]">小时</span>
                   </div>
                 </div>
 
@@ -312,99 +313,7 @@ export function Settings() {
             </>
           )}
 
-          {section === 'notify' && (
-            <>
-              <section className="settings-section">
-                <div className="settings-section-head">
-                  <h2>邮件通知</h2>
-                  <p>通知偏好会被保存并用于事件筛选。当前版本的邮件发送通道尚未接入，因此不会实际发出邮件。</p>
-                </div>
-                <div className="form-note mb-3" style={{ borderColor: '#ecd9b8', background: '#fbf6ea', color: '#7a5b2a' }}>
-                  邮件发送属于 P1 能力：界面与偏好已就位，SMTP 连接和发送队列还未实现。需要邮件提醒时，请先使用站内事件中心。
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-row-label">
-                    <strong>启用邮件通知</strong>
-                    <p>保存偏好；实际发送要等邮件通道接入后才会生效。</p>
-                  </div>
-                  <div className="setting-row-control">
-                    <button
-                      className={`switch ${form.emailEnabled ? 'on' : ''}`}
-                      role="switch"
-                      aria-checked={form.emailEnabled}
-                      aria-label="启用邮件通知"
-                      onClick={() => set('emailEnabled', !form.emailEnabled)}
-                    />
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-row-label">
-                    <strong>收件邮箱</strong>
-                    <p>只用于个人通知，不会作为外部数据源凭据。</p>
-                  </div>
-                  <div className="setting-row-control w-[280px]">
-                    <input
-                      type="email"
-                      className="field-input"
-                      value={form.emailTo}
-                      onChange={(event) => set('emailTo', event.target.value)}
-                      placeholder="you@example.com"
-                      disabled={!form.emailEnabled}
-                    />
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-row-label">
-                    <strong>免打扰时段</strong>
-                    <p>例如 23:00-08:00。仅影响未来的通知发送。</p>
-                  </div>
-                  <div className="setting-row-control w-[160px]">
-                    <input
-                      className="field-input"
-                      value={form.quietHours}
-                      onChange={(event) => set('quietHours', event.target.value)}
-                      placeholder="23:00-08:00"
-                      disabled={!form.emailEnabled}
-                    />
-                  </div>
-                </div>
-              </section>
-
-              <section className="settings-section">
-                <div className="settings-section-head">
-                  <h2>通知内容</h2>
-                  <p>选择哪些变化值得打断你。默认只关注高风险与生命周期变化。</p>
-                </div>
-                {(
-                  [
-                    ['notifyP0', 'P0 实际利用漏洞', '已进入 CISA KEV 且本地版本确认受影响。'],
-                    ['notifyP1', 'P1 高危漏洞', '严重或高危，且当前版本确认受影响。'],
-                    ['notifyEol', '生命周期告警', '进入即将 EOL 或已经 EOL。'],
-                    ['notifyRelease', '版本发布', '有新稳定版本；默认关闭以避免噪声。'],
-                  ] as Array<[NotifyKey, string, string]>
-                ).map(([key, label, hint]) => (
-                  <div className="setting-row" key={key}>
-                    <div className="setting-row-label">
-                      <strong>{label}</strong>
-                      <p>{hint}</p>
-                    </div>
-                    <div className="setting-row-control">
-                      <button
-                        className={`switch ${form[key] ? 'on' : ''}`}
-                        role="switch"
-                        aria-checked={Boolean(form[key])}
-                        aria-label={label}
-                        onClick={() => set(key, !form[key])}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </section>
-            </>
-          )}
+          {section === 'notify' && <NotificationSettings form={form} set={set} />}
 
           {section === 'data' && (
             <>
@@ -415,10 +324,10 @@ export function Settings() {
                 </div>
                 <div className="backup-card">
                   <div>
-                    <div className="flex items-center gap-1.5 text-[11.5px] font-[540]">
+                    <div className="flex items-center gap-1.5 text-[0.875rem] font-[540]">
                       <Download size={13} /> 下载数据库备份
                     </div>
-                    <p className="mt-1 text-[9.5px] text-[var(--muted)]">
+                    <p className="mt-1 text-[0.71875rem] text-[var(--muted)]">
                       下载后请自行保管。恢复时需要停止服务，用备份文件替换 data/opsite.db。
                     </p>
                   </div>
@@ -522,8 +431,16 @@ export function Settings() {
                 <div className="mini-list">
                   <div className="mini-row">
                     <div className="mini-row-main">
-                      <strong>邮件发送尚未接入</strong>
-                      <span>偏好可保存，SMTP 与发送队列属于 P1 后续工作。</span>
+                      <strong>邮件依赖你自己的 SMTP</strong>
+                      <span>
+                        Opsite 不内置邮件服务，也不会代为投递。未配置 SMTP 时站内通知照常工作，邮件投递会被标记为已跳过。
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mini-row">
+                    <div className="mini-row-main">
+                      <strong>单用户、无多租户</strong>
+                      <span>关注与通知属于本机实例，没有账号体系、角色或云端同步。</span>
                     </div>
                   </div>
                   <div className="mini-row">
@@ -544,7 +461,7 @@ export function Settings() {
           )}
 
           <div className="mt-4 flex items-center justify-between gap-3">
-            <span className="text-[9px] text-[var(--muted-2)]">
+            <span className="text-[0.6875rem] text-[var(--muted-2)]">
               {dirty ? '有未保存的更改' : '设置已与本地数据库同步'}
             </span>
             <button className="btn btn-primary" onClick={() => void save()} disabled={!dirty || saving}>

@@ -26,6 +26,7 @@ import {
 } from '../adapters/discovery.js';
 import { db, nowIso } from '../db.js';
 import { getRadarItem } from './notes.js';
+import { dispatchDiscoveryCandidate } from './notifications.js';
 
 interface CandidateRow {
   id: string;
@@ -495,6 +496,12 @@ function upsertCandidate(
     timestamp,
   );
   linkCandidateSource(id, item, timestamp);
+  try {
+    const candidate = getDiscoveryCandidate(id);
+    if (candidate) dispatchDiscoveryCandidate(candidate, true);
+  } catch (error) {
+    console.error('[notifications] discovery dispatch failed', error);
+  }
   return { candidateId: id, created: true, duplicate: false };
 }
 

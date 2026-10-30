@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   ArrowRight,
   ArrowUpRight,
+  Bell,
   Boxes,
   CircleAlert,
   Clock3,
@@ -24,6 +25,7 @@ import { AddSoftwareDialog } from '../components/AddSoftwareDialog';
 import { EditSoftwareDialog } from '../components/EditSoftwareDialog';
 import { EmptyState, LoadingBlock, PageHeader, SectionHeader } from '../components/ui';
 import { useDocumentTitle } from '../lib/hooks';
+import { notificationRuleMeta, notificationSeverityMeta } from '../lib/notification-labels';
 
 type StatusFilter = 'all' | 'risk' | 'update' | 'lifecycle' | 'source';
 type SortOption = 'risk' | 'recent' | 'name';
@@ -298,6 +300,47 @@ export function Dashboard() {
         </div>
       </section>
 
+      {((data?.notifications.unread ?? 0) > 0 || (data?.notifications.recent.length ?? 0) > 0) && (
+        <section className="section rise notification-home" style={{ animationDelay: '40ms' }}>
+          <SectionHeader
+            title="通知中心"
+            count={data?.notifications.unread}
+            subtitle="按关注对象与订阅规则生成；站内通知不依赖邮件通道。"
+            action={
+              <Link to="/notifications" className="text-link">
+                <Bell size={12} /> 查看全部 <ArrowRight size={11} />
+              </Link>
+            }
+          />
+          <div className="notification-strip panel">
+            {data?.notifications.recent.map((item) => {
+              const severity = notificationSeverityMeta[item.severity];
+              return (
+                <Link
+                  className={`notification-strip-row ${item.readAt ? '' : 'unread'}`}
+                  key={item.id}
+                  to={item.link ?? '/notifications'}
+                >
+                  <span className={`notification-severity ${severity.className}`}>
+                    <span>{severity.label}</span>
+                    <i />
+                  </span>
+                  <span className="notification-strip-main">
+                    <strong>{item.title}</strong>
+                    <span>
+                      {item.targetName} · {notificationRuleMeta[item.ruleType].label} ·{' '}
+                      {relativeTime(item.createdAt)}
+                    </span>
+                  </span>
+                  {!item.readAt && <span className="unread-dot" />}
+                  <ArrowUpRight size={12} className="notification-strip-arrow" />
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {software.length === 0 ? (
         <section className="section rise" style={{ animationDelay: '60ms' }}>
           <div className="panel p-6 sm:p-8">
@@ -306,10 +349,10 @@ export function Dashboard() {
                 <Sparkles size={17} />
               </span>
               <div className="eyebrow no-rule justify-center">Start here</div>
-              <h2 className="mt-2 font-display text-[24px] font-[560] tracking-[-0.035em]">
+              <h2 className="mt-2 font-display text-[1.625rem] font-[560] tracking-[-0.035em]">
                 从关注第一个软件开始
               </h2>
-              <p className="mx-auto mt-2 max-w-[520px] text-[11.5px] leading-7 text-[var(--muted)]">
+              <p className="mx-auto mt-2 max-w-[520px] text-[0.875rem] leading-7 text-[var(--muted)]">
                 添加软件并配置当前版本后，Opsite 会自动采集发布、生命周期和安全公告，并把所有情报关联到同一个软件身份。
               </p>
               <div className="mt-5 flex justify-center gap-2">
@@ -323,7 +366,7 @@ export function Dashboard() {
             </div>
 
             <div className="mt-7 border-t border-[var(--line)] pt-5">
-              <div className="mb-3 text-center text-[9px] uppercase tracking-[0.12em] text-[var(--muted-2)]">
+              <div className="mb-3 text-center text-[0.6875rem] uppercase tracking-[0.12em] text-[var(--muted-2)]">
                 常用起点
               </div>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -342,8 +385,8 @@ export function Dashboard() {
                       }}
                     />
                     <span>
-                      <strong className="block text-[10.5px] font-[550]">{item.name}</strong>
-                      <span className="mt-0.5 block text-[8.5px] text-[var(--muted)]">{item.category}</span>
+                      <strong className="block text-[0.8125rem] font-[550]">{item.name}</strong>
+                      <span className="mt-0.5 block text-[0.65625rem] text-[var(--muted)]">{item.category}</span>
                     </span>
                   </button>
                 ))}
@@ -502,8 +545,8 @@ export function Dashboard() {
                     <Radar size={15} />
                   </span>
                   <div>
-                    <div className="text-[12px] font-[550]">雷达还没有条目</div>
-                    <p className="mt-1 text-[10px] text-[var(--muted)]">
+                    <div className="text-[0.875rem] font-[550]">雷达还没有条目</div>
+                    <p className="mt-1 text-[0.75rem] text-[var(--muted)]">
                       把一个正在评估的工具或学习主题放进去，首页会持续提醒你。
                     </p>
                   </div>

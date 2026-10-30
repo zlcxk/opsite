@@ -38,6 +38,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAppData } from '../contexts/AppDataContext';
 import { EmptyState, PageHeader } from '../components/ui';
 import { DiscoveryImportDialog } from '../components/DiscoveryImportDialog';
+import { FollowButton } from '../components/FollowButton';
 
 type SortKey = 'discovered' | 'updated' | 'stars' | 'title';
 
@@ -198,18 +199,21 @@ export function Discover() {
         title="技术发现"
         subtitle="从 GitHub 与 CNCF 官方来源发现候选技术。来源只负责提供线索，是否进入技术雷达由你决定。"
         actions={
-          <button
-            className="btn btn-primary"
-            onClick={() => void refreshDiscovery()}
-            disabled={refreshing || overview?.running}
-          >
-            {refreshing || overview?.running ? (
-              <Loader2 size={14} className="spin" />
-            ) : (
-              <RefreshCw size={14} />
-            )}
-            {overview?.running ? '采集中…' : refreshing ? '启动中…' : '立即采集'}
-          </button>
+          <>
+            <FollowButton targetType="discovery" targetId="feed" />
+            <button
+              className="btn btn-primary"
+              onClick={() => void refreshDiscovery()}
+              disabled={refreshing || overview?.running}
+            >
+              {refreshing || overview?.running ? (
+                <Loader2 size={14} className="spin" />
+              ) : (
+                <RefreshCw size={14} />
+              )}
+              {overview?.running ? '采集中…' : refreshing ? '启动中…' : '立即采集'}
+            </button>
+          </>
         }
       />
 

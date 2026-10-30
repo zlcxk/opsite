@@ -13,6 +13,7 @@ import {
   severityMeta,
 } from '../lib/format';
 import { useToast } from '../contexts/ToastContext';
+import { FollowButton } from './FollowButton';
 
 interface AdvisoryDrawerProps {
   advisoryId: string | null;
@@ -79,9 +80,12 @@ export function AdvisoryDrawer({ advisoryId, onClose, onUpdated }: AdvisoryDrawe
             <h2>{advisory?.identifier ?? '加载中'}</h2>
             <p>{advisory?.softwareName ? `${advisory.softwareName} · 上游公告与本地版本判断` : '读取公告与影响范围'}</p>
           </div>
-          <button className="close-btn" onClick={onClose} aria-label="关闭漏洞详情">
-            <X size={17} />
-          </button>
+          <div className="flex items-center gap-2">
+            {advisory && <FollowButton targetType="advisory" targetId={advisory.id} compact />}
+            <button className="close-btn" onClick={onClose} aria-label="关闭漏洞详情">
+              <X size={17} />
+            </button>
+          </div>
         </div>
 
         <div className="drawer-body">
@@ -98,7 +102,7 @@ export function AdvisoryDrawer({ advisoryId, onClose, onUpdated }: AdvisoryDrawe
               </div>
 
               <h3 className="mt-3">{advisory.title}</h3>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-[9.5px] text-[var(--muted)]">
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[0.71875rem] text-[var(--muted)]">
                 <span>发布 {formatDate(advisory.publishedAt)}</span>
                 <span>·</span>
                 <span>上游更新 {formatDate(advisory.updatedAt)}</span>
@@ -171,7 +175,7 @@ export function AdvisoryDrawer({ advisoryId, onClose, onUpdated }: AdvisoryDrawe
                 {advisory.sources.length ? (
                   advisory.sources.map((source, index) => (
                     <div className="source-ref" key={`${source.sourceType}-${index}`}>
-                      <span className="pill pill-neutral" style={{ height: 18, fontSize: 8 }}>
+                      <span className="pill pill-neutral" style={{ height: 18, fontSize: '0.65625rem' }}>
                         {source.sourceType === 'github_advisories'
                           ? 'GitHub'
                           : source.sourceType === 'nvd'
@@ -190,7 +194,7 @@ export function AdvisoryDrawer({ advisoryId, onClose, onUpdated }: AdvisoryDrawe
                     </div>
                   ))
                 ) : (
-                  <div className="text-[10px] text-[var(--muted)]">暂无来源引用。</div>
+                  <div className="text-[0.75rem] text-[var(--muted)]">暂无来源引用。</div>
                 )}
               </div>
             </div>
@@ -214,7 +218,7 @@ export function AdvisoryDrawer({ advisoryId, onClose, onUpdated }: AdvisoryDrawe
                 ))}
               </select>
             </div>
-            <span className="text-[8.5px] text-[var(--muted-2)]">状态由你维护，上游更新不会覆盖</span>
+            <span className="text-[0.65625rem] text-[var(--muted-2)]">状态由你维护，上游更新不会覆盖</span>
           </div>
         )}
       </aside>

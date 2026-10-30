@@ -233,7 +233,7 @@ export function Knowledge() {
             </div>
             <div className="note-list">
               {filtered.length === 0 ? (
-                <div className="p-5 text-center text-[10px] text-[var(--muted)]">没有匹配的笔记</div>
+                <div className="p-5 text-center text-[0.75rem] text-[var(--muted)]">没有匹配的笔记</div>
               ) : (
                 filtered.map((note) => (
                   <button
@@ -261,7 +261,7 @@ export function Knowledge() {
 
           <div className="note-editor">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <span className={`text-[8.5px] ${dirty ? 'text-[var(--high)]' : 'text-[var(--muted-2)]'}`}>
+              <span className={`text-[0.65625rem] ${dirty ? 'text-[var(--high)]' : 'text-[var(--muted-2)]'}`}>
                 {statusText}
               </span>
               <div className="flex items-center gap-1.5">

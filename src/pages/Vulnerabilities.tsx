@@ -231,7 +231,7 @@ export function Vulnerabilities() {
                 <div className="advisory-col-severity">
                   <span className={`pill pill-${severity.className}`}>{severity.label}</span>
                   {advisory.score !== null && (
-                    <span className="mt-1 block font-mono text-[8.5px] text-[var(--muted-2)]">
+                    <span className="mt-1 block font-mono text-[0.65625rem] text-[var(--muted-2)]">
                       CVSS {advisory.score}
                     </span>
                   )}
@@ -239,7 +239,7 @@ export function Vulnerabilities() {
                 <div>
                   <span className={`pill pill-${impact.className}`}>{impact.label}</span>
                   {advisory.fixedVersions.length > 0 && (
-                    <span className="mt-1 block font-mono text-[8.5px] text-[var(--muted-2)]">
+                    <span className="mt-1 block font-mono text-[0.65625rem] text-[var(--muted-2)]">
                       修复 {advisory.fixedVersions[0]}
                     </span>
                   )}
@@ -265,7 +265,7 @@ export function Vulnerabilities() {
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[9px] text-[var(--muted-2)]">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[0.6875rem] text-[var(--muted-2)]">
         <span>共 {filtered.length} 条记录 · 优先级由严重程度、KEV 状态和本地版本影响共同决定</span>
         <span>处置状态与上游公告更新相互独立</span>
       </div>

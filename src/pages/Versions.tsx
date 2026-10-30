@@ -152,7 +152,7 @@ export function Versions() {
               仅领先当前版本
             </button>
             <div className="filter-spacer" />
-            <span className="text-[9px] text-[var(--muted-2)]">
+            <span className="text-[0.6875rem] text-[var(--muted-2)]">
               最新记录首次发现于 {relativeTime(releases.data?.[0]?.firstSeenAt)}
             </span>
           </div>
@@ -189,12 +189,12 @@ export function Versions() {
                           <span className="release-version">{item.version}</span>
                           <span className="release-name">{item.softwareName}</span>
                           {item.channel === 'prerelease' && (
-                            <span className="pill pill-note" style={{ height: 17, fontSize: 7.5 }}>
+                            <span className="pill pill-note" style={{ height: 17, fontSize: '0.65625rem' }}>
                               预发布
                             </span>
                           )}
                           {item.isNewer && (
-                            <span className="pill pill-info" style={{ height: 17, fontSize: 7.5 }}>
+                            <span className="pill pill-info" style={{ height: 17, fontSize: '0.65625rem' }}>
                               领先当前 {item.currentVersion}
                             </span>
                           )}
@@ -213,7 +213,7 @@ export function Versions() {
                       </div>
                       {item.url && (
                         <a
-                          className="text-link shrink-0 text-[10px]"
+                          className="text-link shrink-0 text-[0.75rem]"
                           href={item.url}
                           target="_blank"
                           rel="noreferrer"
@@ -280,20 +280,20 @@ export function Versions() {
                       <Logo name={head.softwareName} logoUrl={head.softwareLogoUrl} size="xs" />
                       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                         <strong>{head.softwareName}</strong>
-                        <span className="text-[9px] text-[var(--muted)]">
+                        <span className="text-[0.6875rem] text-[var(--muted)]">
                           当前 {head.currentVersion ?? '未配置'}
                         </span>
                         {head.isCurrent ? (
-                          <span className={`pill pill-${support.className}`} style={{ height: 18, fontSize: 7.5 }}>
+                          <span className={`pill pill-${support.className}`} style={{ height: 18, fontSize: '0.65625rem' }}>
                             {support.label}
                           </span>
                         ) : (
-                          <span className="pill pill-neutral" style={{ height: 18, fontSize: 7.5 }}>
+                          <span className="pill pill-neutral" style={{ height: 18, fontSize: '0.65625rem' }}>
                             当前周期未匹配
                           </span>
                         )}
                       </div>
-                      <Link to={`/software/${head.softwareId}?tab=lifecycle`} className="text-link text-[9px]">
+                      <Link to={`/software/${head.softwareId}?tab=lifecycle`} className="text-link text-[0.6875rem]">
                         查看详情 <ArrowUpRight size={10} />
                       </Link>
                     </div>
@@ -314,11 +314,11 @@ export function Versions() {
                           <span className="lifecycle-cycle">{row.cycle}</span>
                           <span className="muted-cell hide-md">{formatDate(row.releaseDate)}</span>
                           <span className="flex flex-wrap items-center gap-1.5">
-                            <span className={`pill pill-${meta.className}`} style={{ height: 18, fontSize: 7.5 }}>
+                            <span className={`pill pill-${meta.className}`} style={{ height: 18, fontSize: '0.65625rem' }}>
                               {meta.label}
                             </span>
                             {row.isCurrent && (
-                              <span className="pill pill-signal" style={{ height: 18, fontSize: 7.5 }}>
+                              <span className="pill pill-signal" style={{ height: 18, fontSize: '0.65625rem' }}>
                                 当前
                               </span>
                             )}
@@ -350,7 +350,7 @@ export function Versions() {
 
                     {hiddenCount > 0 && !isExpanded && (
                       <button
-                        className="w-full border-t border-[var(--line)] py-2 text-[9px] text-[var(--muted)] hover:bg-[#fafbf8]"
+                        className="w-full border-t border-[var(--line)] py-2 text-[0.6875rem] text-[var(--muted)] hover:bg-[#fafbf8]"
                         onClick={() =>
                           setExpanded((prev) => {
                             const next = new Set(prev);
@@ -364,7 +364,7 @@ export function Versions() {
                     )}
                     {isExpanded && rows.length > 6 && (
                       <button
-                        className="w-full border-t border-[var(--line)] py-2 text-[9px] text-[var(--muted)] hover:bg-[#fafbf8]"
+                        className="w-full border-t border-[var(--line)] py-2 text-[0.6875rem] text-[var(--muted)] hover:bg-[#fafbf8]"
                         onClick={() =>
                           setExpanded((prev) => {
                             const next = new Set(prev);
@@ -382,7 +382,7 @@ export function Versions() {
             </div>
           )}
 
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-[9px] text-[var(--muted-2)]">
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[0.6875rem] text-[var(--muted-2)]">
             <Boxes size={11} />
             生命周期记录保留来源链接与采集时间；无可靠来源的软件会显示“未知”，不会推断 EOL。
             <span className="ml-auto inline-flex items-center gap-1">

@@ -205,6 +205,7 @@ export interface DashboardData {
   software: SoftwareSummary[];
   radar: RadarItem[];
   radarCount: number;
+  notifications: NotificationSummary;
   lastSyncAt: string | null;
   schedulerEnabled: boolean;
   nextSyncAt: string | null;
@@ -420,6 +421,104 @@ export interface CatalogItem {
   sources: CatalogSource[];
 }
 
+export type FollowTargetType = 'software' | 'radar' | 'discovery' | 'advisory';
+
+export type NotificationRuleType =
+  | 'new_release'
+  | 'lifecycle_change'
+  | 'new_vulnerability'
+  | 'high_risk_advisory'
+  | 'advisory_update'
+  | 'project_update'
+  | 'discovery';
+
+export type NotificationSeverity = 'urgent' | 'important' | 'normal';
+export type NotificationMinSeverity = 'all' | 'important' | 'urgent';
+export type DeliveryStatus = 'pending' | 'sending' | 'sent' | 'failed' | 'skipped';
+export type EmailMode = 'realtime' | 'digest';
+export type SmtpEncryption = 'none' | 'starttls' | 'ssl';
+
+export interface SubscriptionRule {
+  eventType: NotificationRuleType;
+  inApp: boolean;
+  email: boolean;
+  minSeverity: NotificationMinSeverity;
+}
+
+export interface FollowTarget {
+  id: string;
+  targetType: FollowTargetType;
+  targetId: string;
+  targetName: string;
+  targetSubtitle: string | null;
+  targetUrl: string | null;
+  softwareId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  effectiveRules: SubscriptionRule[];
+  hasOverrides: boolean;
+}
+
+export interface NotificationItem {
+  id: string;
+  ruleType: NotificationRuleType;
+  severity: NotificationSeverity;
+  title: string;
+  body: string | null;
+  targetType: FollowTargetType;
+  targetId: string;
+  targetName: string;
+  eventId: string | null;
+  softwareId: string | null;
+  link: string | null;
+  sourceName: string | null;
+  sourceUrl: string | null;
+  createdAt: string;
+  readAt: string | null;
+  emailStatus: DeliveryStatus | null;
+  emailError: string | null;
+}
+
+export interface NotificationListResponse {
+  items: NotificationItem[];
+  total: number;
+  unread: number;
+  limit: number;
+  offset: number;
+}
+
+export interface NotificationSummary {
+  unread: number;
+  urgent: number;
+  recent: NotificationItem[];
+}
+
+export interface DeliveryRecord {
+  id: string;
+  notificationId: string;
+  title: string;
+  recipient: string | null;
+  status: DeliveryStatus;
+  attempts: number;
+  lastError: string | null;
+  nextAttemptAt: string | null;
+  sentAt: string | null;
+  createdAt: string;
+}
+
+export interface SmtpConfigView {
+  configured: boolean;
+  enabled: boolean;
+  host: string;
+  port: number;
+  encryption: SmtpEncryption;
+  username: string;
+  fromName: string;
+  fromEmail: string;
+  passwordConfigured: boolean;
+  updatedAt: string | null;
+}
+
 export interface Settings {
   syncEnabled: boolean;
   syncCron: string;
@@ -427,6 +526,8 @@ export interface Settings {
   nvdKeyConfigured: boolean;
   emailEnabled: boolean;
   emailTo: string;
+  emailMode: EmailMode;
+  digestTime: string;
   notifyP0: boolean;
   notifyP1: boolean;
   notifyEol: boolean;

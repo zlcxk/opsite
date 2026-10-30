@@ -8,6 +8,7 @@ import type {
   RadarStatus,
 } from '../../shared/types.js';
 import { db, nowIso } from '../db.js';
+import { dispatchRadarRecord } from './notifications.js';
 
 interface RadarRow {
   id: string;
@@ -279,7 +280,14 @@ export function createRadarRecord(
   });
   run();
   const row = db.prepare('SELECT * FROM radar_record WHERE id = ?').get(id) as RadarRecordRow;
-  return mapRecord(row);
+  const record = mapRecord(row);
+  try {
+    const item = getRadarItem(radarItemId);
+    if (item) dispatchRadarRecord(item, record);
+  } catch (error) {
+    console.error('[notifications] radar dispatch failed', error);
+  }
+  return record;
 }
 
 export function deleteRadar(id: string): boolean {

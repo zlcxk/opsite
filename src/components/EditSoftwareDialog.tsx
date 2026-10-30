@@ -157,8 +157,8 @@ export function EditSoftwareDialog({ software, open, onClose, onUpdated }: EditS
         <div className="mb-4 flex items-center gap-3 rounded-xl border border-[var(--line)] bg-white p-3">
           <Logo name={form.name || software.name} logoUrl={form.logoUrl || null} size="lg" />
           <div className="min-w-0 flex-1">
-            <div className="text-[12px] font-[570]">{form.name || software.name}</div>
-            <div className="mt-1 flex items-center gap-2 text-[9.5px] text-[var(--muted)]">
+            <div className="text-[0.875rem] font-[570]">{form.name || software.name}</div>
+            <div className="mt-1 flex items-center gap-2 text-[0.71875rem] text-[var(--muted)]">
               <span className="category-dot" style={{ background: categoryColor(form.category) }} />
               {form.category || '未分类'} · {sources.filter((source) => source.enabled).length} 个启用数据源
             </div>
@@ -317,13 +317,13 @@ export function EditSoftwareDialog({ software, open, onClose, onUpdated }: EditS
                       onChange={(event) => updateSource(index, { enabled: event.target.checked })}
                     />
                     <span>
-                      <strong className="block text-[11px] font-[550]">{source.label}</strong>
-                      <span className="mt-0.5 block font-mono text-[8px] text-[var(--muted-2)]">
+                      <strong className="block text-[0.84375rem] font-[550]">{source.label}</strong>
+                      <span className="mt-0.5 block font-mono text-[0.65625rem] text-[var(--muted-2)]">
                         {sourceTypeLabel(source.type)} · {summarizeConfig(source.type, source.config)}
                       </span>
                     </span>
                   </label>
-                  <span className={`pill ${source.lastStatus === 'error' ? 'pill-danger' : source.lastStatus === 'ok' ? 'pill-calm' : 'pill-neutral'}`} style={{ height: 19, fontSize: 8 }}>
+                  <span className={`pill ${source.lastStatus === 'error' ? 'pill-danger' : source.lastStatus === 'ok' ? 'pill-calm' : 'pill-neutral'}`} style={{ height: 19, fontSize: '0.65625rem' }}>
                     {source.lastStatus === 'error' ? '采集异常' : source.lastStatus === 'ok' ? '正常' : '未同步'}
                   </span>
                 </div>

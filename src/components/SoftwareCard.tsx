@@ -148,7 +148,7 @@ export function SoftwareCard({ software, onEdit }: SoftwareCardProps) {
               <span>{software.category}</span>
               {software.environment && <span className="faint">· {software.environment}</span>}
               {software.watchStatus === 'paused' && (
-                <span className="pill pill-neutral" style={{ height: 17, fontSize: 7.5 }}>
+                <span className="pill pill-neutral" style={{ height: 17, fontSize: '0.65625rem' }}>
                   已暂停
                 </span>
               )}
@@ -291,11 +291,11 @@ export function SoftwareCard({ software, onEdit }: SoftwareCardProps) {
           ) : (
             <span className="ml-auto inline-flex items-center gap-1.5">
               {software.riskLevel === 'critical' ? (
-                <span className="pill pill-danger" style={{ height: 17, fontSize: 7.5 }}>
+                <span className="pill pill-danger" style={{ height: 17, fontSize: '0.65625rem' }}>
                   P0 风险
                 </span>
               ) : software.riskLevel === 'high' ? (
-                <span className="pill pill-warn" style={{ height: 17, fontSize: 7.5 }}>
+                <span className="pill pill-warn" style={{ height: 17, fontSize: '0.65625rem' }}>
                   高优先级
                 </span>
               ) : null}

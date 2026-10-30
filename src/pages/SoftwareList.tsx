@@ -254,7 +254,7 @@ export function SoftwareList() {
                       <strong>{item.name}</strong>
                       {item.pinned && <Pin size={10} className="shrink-0 text-[var(--signal)]" />}
                       {item.watchStatus === 'paused' && (
-                        <span className="pill pill-neutral" style={{ height: 16, fontSize: 7 }}>暂停</span>
+                        <span className="pill pill-neutral" style={{ height: 16, fontSize: '0.65625rem' }}>暂停</span>
                       )}
                     </div>
                     <span>
