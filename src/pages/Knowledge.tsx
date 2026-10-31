@@ -22,6 +22,7 @@ import { api } from '../lib/api';
 import { useAppData } from '../contexts/AppDataContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime } from '../lib/format';
+import { markdownExcerpt } from '../lib/markdown-text';
 import {
   contentStatusLabels,
   contentStatusOrder,
@@ -41,7 +42,20 @@ interface Draft {
 
 const emptyDraft: Draft = { title: '', content: '', tags: '', relatedSoftwareId: '', techNodeId: '' };
 
+function sameDraft(a: Draft, b: Draft): boolean {
+  return (
+    a.title === b.title &&
+    a.content === b.content &&
+    a.tags === b.tags &&
+    a.relatedSoftwareId === b.relatedSoftwareId &&
+    a.techNodeId === b.techNodeId
+  );
+}
+
 type Tab = 'tech' | 'notes';
+type TechContentFilter = TechContentStatus | 'stale' | '';
+
+const STALE_VERIFICATION_DAYS = 180;
 
 export function Knowledge() {
   useDocumentTitle('知识库');
@@ -69,20 +83,30 @@ export function Knowledge() {
   const [search, setSearch] = useState('');
   const [deleting, setDeleting] = useState<KnowledgeNote | null>(null);
   const queryApplied = useRef(false);
+  const draftRef = useRef(draft);
+  const selectedNoteIdRef = useRef(selectedNoteId);
+  const creatingRef = useRef(creating);
+  const notesRef = useRef(notesData ?? []);
+  const noteSaveRef = useRef<Promise<boolean> | null>(null);
+  draftRef.current = draft;
+  selectedNoteIdRef.current = selectedNoteId;
+  creatingRef.current = creating;
+  notesRef.current = notesData ?? [];
 
   // Technology knowledge
   const { data: techDomains } = useApi<TechDomainSummary[]>('/tech/domains');
   const { data: allTechNodes } = useApi<TechNodeListResponse>('/tech/nodes?status=active&limit=300');
   const [techDomainId, setTechDomainId] = useState('');
   const [techSearch, setTechSearch] = useState('');
-  const [techStatus, setTechStatus] = useState<TechContentStatus | ''>('');
+  const [techStatus, setTechStatus] = useState<TechContentFilter>('');
   const [techType, setTechType] = useState<TechNodeType | ''>('');
   const debouncedTechSearch = useDebouncedValue(techSearch, 300);
   const techQuery = useMemo(() => {
     const params = new URLSearchParams({ status: 'active', limit: '300' });
     if (techDomainId) params.set('domainId', techDomainId);
     if (debouncedTechSearch.trim()) params.set('q', debouncedTechSearch.trim());
-    if (techStatus) params.set('contentStatus', techStatus);
+    if (techStatus === 'stale') params.set('staleDays', String(STALE_VERIFICATION_DAYS));
+    else if (techStatus) params.set('contentStatus', techStatus);
     if (techType) params.set('nodeType', techType);
     return `/tech/nodes?${params.toString()}`;
   }, [techDomainId, debouncedTechSearch, techStatus, techType]);
@@ -205,53 +229,83 @@ export function Knowledge() {
     setSelectedTechId(id);
   };
 
-  const persistNote = async (silent = false): Promise<boolean> => {
-    if (!draft.title.trim()) {
+  /**
+   * A note save is a snapshot operation: the response only clears `dirty` when
+   * the draft still matches what was sent. Only one PATCH/POST may be in
+   * flight, so a slower response can never overwrite a newer keystroke.
+   *
+   * Returns true only when it is safe to navigate away: the request succeeded
+   * and no further edit arrived while it was running.
+   */
+  const persistNote = (silent = false): Promise<boolean> => {
+    if (noteSaveRef.current) return noteSaveRef.current;
+    const snapshot = draftRef.current;
+    const noteId = selectedNoteIdRef.current;
+    const isCreating = creatingRef.current;
+    if (!snapshot.title.trim()) {
       if (!silent) push('笔记需要一个标题', 'error');
-      return false;
+      return Promise.resolve(false);
     }
     setSaveState('saving');
-    try {
-      const body = {
-        title: draft.title.trim(),
-        content: draft.content,
-        tags: draft.tags
-          .split(',')
-          .map((tag) => tag.trim())
-          .filter(Boolean),
-        relatedSoftwareId: draft.relatedSoftwareId || null,
-        techNodeId: draft.techNodeId || null,
-      };
-      const saved = creating
-        ? await api.post<KnowledgeNote>('/knowledge', body)
-        : await api.patch<KnowledgeNote>(`/knowledge/${selectedNoteId}`, body);
-      if (creating) {
-        setSelectedNoteId(saved.id);
-        setCreating(false);
-        await refetchNotes(true);
-      } else {
-        setNotesData(notes.map((note) => (note.id === saved.id ? saved : note)));
+    const task = (async () => {
+      try {
+        const body = {
+          title: snapshot.title.trim(),
+          content: snapshot.content,
+          tags: snapshot.tags
+            .split(',')
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+          relatedSoftwareId: snapshot.relatedSoftwareId || null,
+          techNodeId: snapshot.techNodeId || null,
+        };
+        const saved = isCreating
+          ? await api.post<KnowledgeNote>('/knowledge', body)
+          : await api.patch<KnowledgeNote>(`/knowledge/${noteId}`, body);
+        const stillCurrent = sameDraft(draftRef.current, snapshot);
+        if (isCreating) {
+          setSelectedNoteId(saved.id);
+          setCreating(false);
+          await refetchNotes(true);
+        } else {
+          setNotesData(
+            notesRef.current.map((note) => (note.id === saved.id ? saved : note)),
+          );
+        }
+        setDirty(!stillCurrent);
+        setSaveState(stillCurrent ? 'saved' : 'idle');
+        if (!silent) push(isCreating ? '笔记已创建' : '笔记已保存');
+        return stillCurrent;
+      } catch (saveError) {
+        setSaveState('error');
+        push(saveError instanceof Error ? saveError.message : '保存失败', 'error');
+        return false;
       }
-      setDirty(false);
-      setSaveState('saved');
-      if (!silent) push(creating ? '笔记已创建' : '笔记已保存');
-      return true;
-    } catch (saveError) {
-      setSaveState('error');
-      push(saveError instanceof Error ? saveError.message : '保存失败', 'error');
-      return false;
-    }
+    })().finally(() => {
+      noteSaveRef.current = null;
+    });
+    noteSaveRef.current = task;
+    return task;
   };
 
   // Autosave edits to existing notes; new notes still need an explicit save.
   useEffect(() => {
-    if (!dirty || creating || !selectedNoteId || !draft.title.trim() || saveState === 'saving') return;
+    if (
+      !dirty ||
+      creating ||
+      !selectedNoteId ||
+      !draft.title.trim() ||
+      saveState === 'saving' ||
+      saveState === 'error'
+    ) {
+      return;
+    }
     const timer = window.setTimeout(() => {
       void persistNote(true);
     }, 1200);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, dirty, creating, selectedNoteId]);
+  }, [draft, dirty, creating, selectedNoteId, saveState]);
 
   useEffect(() => {
     const handler = (event: BeforeUnloadEvent) => {
@@ -280,19 +334,32 @@ export function Knowledge() {
 
   const selectNote = async (note: KnowledgeNote) => {
     if (note.id === selectedNoteId) return;
-    if (dirty && selectedNoteId && !creating) {
-      const saved = await persistNote(true);
-      if (!saved) return;
-    }
-    if (dirty && creating) {
-      push('请先保存或丢弃当前新笔记', 'error');
-      return;
+    if (dirty) {
+      if (creating) {
+        push('请先保存或放弃当前新笔记', 'error');
+        return;
+      }
+      const safe = await persistNote(true);
+      if (!safe) {
+        push('当前笔记尚未保存，已停留在原笔记', 'error');
+        return;
+      }
     }
     loadNote(note);
   };
 
-  const newNote = () => {
-    if (dirty && creating) return;
+  const newNote = async () => {
+    if (dirty) {
+      if (creating) {
+        push('请先保存或放弃当前新笔记', 'error');
+        return;
+      }
+      const safe = await persistNote(true);
+      if (!safe) {
+        push('当前笔记尚未保存，不能新建笔记', 'error');
+        return;
+      }
+    }
     setTab('notes');
     setSelectedNoteId(null);
     setCreating(true);
@@ -437,7 +504,7 @@ export function Knowledge() {
               </select>
               <select
                 value={techStatus}
-                onChange={(event) => setTechStatus(event.target.value as TechContentStatus | '')}
+                onChange={(event) => setTechStatus(event.target.value as TechContentFilter)}
                 aria-label="按文档状态筛选"
               >
                 <option value="">全部状态</option>
@@ -446,6 +513,7 @@ export function Knowledge() {
                     {contentStatusLabels[status]}
                   </option>
                 ))}
+                <option value="stale">长期未验证（&gt; {STALE_VERIFICATION_DAYS} 天）</option>
               </select>
             </div>
             {techError && <div className="error-note mb-2">{techError}</div>}
@@ -558,7 +626,7 @@ export function Knowledge() {
                         onClick={() => void selectNote(note)}
                       >
                         <strong>{note.title}</strong>
-                        <span>{note.content.trim() || '暂无内容'}</span>
+                        <span>{markdownExcerpt(note.content) || '暂无内容'}</span>
                         <span className="mt-1.5 flex flex-wrap items-center gap-1">
                           {note.techNodeName && (
                             <em className="note-tag note-tag-tech">

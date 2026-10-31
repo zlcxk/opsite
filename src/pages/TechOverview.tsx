@@ -5,7 +5,11 @@ import {
   ArrowRight,
   Boxes,
   BookOpenCheck,
+  Database,
+  GitBranch,
   Layers3,
+  LineChart,
+  MessagesSquare,
   Network,
   Plus,
   Sparkles,
@@ -32,7 +36,15 @@ import {
 } from '../lib/tech';
 import { EmptyState, Modal, PageHeader } from '../components/ui';
 
-const domainIcons: Record<string, typeof Boxes> = { Boxes, Activity, Network };
+const domainIcons: Record<string, typeof Boxes> = {
+  Boxes,
+  Activity,
+  Network,
+  Database,
+  MessagesSquare,
+  LineChart,
+  GitBranch,
+};
 
 function DomainGlyph({ icon }: { icon: string | null }) {
   const Icon = (icon && domainIcons[icon]) || Network;

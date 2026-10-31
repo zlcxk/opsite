@@ -71,23 +71,48 @@ export function SourceConfigFields({
 
   if (type === 'nvd') {
     return (
-      <label className="field">
-        <span className="field-label">NVD 关键词</span>
-        <input
-          className="field-input"
-          value={config.keyword ?? ''}
-          onChange={(event) => update('keyword', event.target.value)}
-          placeholder="如 PostgreSQL"
-        />
-        <span className="field-hint">关键词越精确，误匹配越少。匹配结果会标记为中等可信度。</span>
-      </label>
+      <>
+        <div className="field-row">
+          <label className="field">
+            <span className="field-label">NVD 关键词</span>
+            <input
+              className="field-input"
+              value={config.keyword ?? ''}
+              onChange={(event) => update('keyword', event.target.value)}
+              placeholder="如 PostgreSQL"
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">CPE Name（可选，优先）</span>
+            <input
+              className="field-input"
+              value={config.cpeName ?? ''}
+              onChange={(event) => update('cpeName', event.target.value)}
+              placeholder="cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*"
+            />
+          </label>
+        </div>
+        <label className="field mt-[13px]">
+          <span className="field-label">匹配说明（可选）</span>
+          <input
+            className="field-input"
+            value={config.note ?? ''}
+            onChange={(event) => update('note', event.target.value)}
+            placeholder="如 PostgreSQL 核心与 contrib，不含第三方扩展"
+          />
+        </label>
+        <span className="field-hint mt-2 block">
+          同时填写时按 CPE 与关键词联合查询；仅 CPE 时按精确产品匹配，可信度更高。关键词结果需人工核实边界。
+        </span>
+      </>
     );
   }
 
   if (type === 'cisa_kev') {
     return (
       <div className="form-note">
-        CISA KEV 使用全量公共目录，仅对本地已采集的 CVE 进行交叉标记，无需额外配置。
+        CISA KEV 是已知遭实际利用漏洞的全局目录，仅对本地已采集的 CVE 进行交叉标记，无需额外配置。
+        有 KEV 来源不代表已经完整采集该软件的全部安全公告。
       </div>
     );
   }
@@ -114,7 +139,8 @@ export function summarizeConfig(type: SourceType, config: SourceConfig): string 
     case 'github_advisories':
       return config.package ? `package · ${config.package}` : '未配置软件包';
     case 'nvd':
-      return config.keyword ? `keyword · ${config.keyword}` : '未配置关键词';
+      if (config.cpeName) return `CPE · ${config.cpeName}${config.keyword ? ` + keyword · ${config.keyword}` : ''}`;
+      return config.keyword ? `keyword · ${config.keyword}` : '未配置关键词或 CPE';
     case 'cisa_kev':
       return '全量目录交叉标记';
     default:

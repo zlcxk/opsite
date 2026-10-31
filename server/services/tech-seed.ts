@@ -7,6 +7,7 @@ import type {
 } from '../../shared/types.js';
 import { db, nowIso } from '../db.js';
 import { seedTechContent } from './tech-content.js';
+import { P2_TEMPLATES } from './tech-seed-p2.js';
 
 export interface SeedNode {
   id: string;
@@ -1285,6 +1286,7 @@ export const TECH_TEMPLATES: TechTemplate[] = [
       },
     ],
   },
+  ...P2_TEMPLATES,
 ];
 
 function softwareIdBySlug(slug: string): string | null {

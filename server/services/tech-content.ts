@@ -4,6 +4,7 @@ import { KUBERNETES_CONTENT } from './tech-content-kubernetes.js';
 import { KUBERNETES_DOCS } from './tech-content-kubernetes-docs.js';
 import { PROMETHEUS_CONTENT } from './tech-content-prometheus.js';
 import { PROMETHEUS_DOCS } from './tech-content-prometheus-docs.js';
+import { P2_CONTENT } from './tech-content-p2.js';
 
 /**
  * A knowledge card for an existing technology node. Every field is optional:
@@ -62,11 +63,28 @@ function isEmpty(value: string | null | undefined): boolean {
   return !value || !value.trim();
 }
 
+/**
+ * Merge entries for the same node without letting `undefined` erase a field
+ * that an earlier source explicitly provided. Later entries win when they
+ * actually define a value; that keeps the card → document priority explicit.
+ */
+export function mergeDefined(base: TechContentEntry, override: TechContentEntry): TechContentEntry {
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(override) as Array<
+    [keyof TechContentEntry, TechContentEntry[keyof TechContentEntry]]
+  >) {
+    if (value !== undefined) {
+      (merged as Record<string, unknown>)[key] = value;
+    }
+  }
+  return merged;
+}
+
 function mergeEntries(entries: TechContentEntry[]): TechContentEntry[] {
   const merged = new Map<string, TechContentEntry>();
   for (const entry of entries) {
     const current = merged.get(entry.nodeId);
-    merged.set(entry.nodeId, current ? { ...current, ...entry } : entry);
+    merged.set(entry.nodeId, current ? mergeDefined(current, entry) : entry);
   }
   return [...merged.values()];
 }
@@ -76,6 +94,7 @@ export const TECH_CONTENT_ENTRIES: TechContentEntry[] = mergeEntries([
   ...KUBERNETES_DOCS,
   ...PROMETHEUS_CONTENT,
   ...PROMETHEUS_DOCS,
+  ...P2_CONTENT,
 ]);
 
 export interface TechContentSeedResult {

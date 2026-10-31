@@ -4,9 +4,11 @@ import {
   Archive,
   ArrowLeft,
   ArrowUpRight,
+  BookOpen,
   Clock3,
   ExternalLink,
   GitBranch,
+  Network,
   NotebookPen,
   Pause,
   Pencil,
@@ -25,6 +27,7 @@ import type {
   KnowledgeNote,
   SoftwareDetail as SoftwareDetailData,
   SyncJob,
+  TechNodeListResponse,
   VersionImpact,
 } from '@shared/types';
 import { useApi, useDocumentTitle } from '../lib/hooks';
@@ -46,6 +49,11 @@ import {
   watchLevelMeta,
 } from '../lib/format';
 import { hasUpdate } from '../lib/version';
+import {
+  contentStatusLabels,
+  masteryLabels,
+  techNodeTypeLabels,
+} from '../lib/tech';
 import { summarizeConfig } from '../components/SourceConfigFields';
 import { Logo } from '../components/Logo';
 import { ActionMenu, EmptyState, LoadingBlock, Modal } from '../components/ui';
@@ -92,6 +100,11 @@ export function SoftwareDetail() {
   const rawTab = searchParams.get('tab') as Tab | null;
   const tab: Tab = tabs.some(([key]) => key === rawTab) ? (rawTab as Tab) : 'overview';
   const compatibility = useApi<KnowledgeNote[]>(tab === 'compatibility' ? '/knowledge' : null);
+  const techCatalog = useApi<TechNodeListResponse>(
+    tab === 'overview' ? '/tech/nodes?status=active&limit=300' : null,
+  );
+  const [techPick, setTechPick] = useState('');
+  const [techBusy, setTechBusy] = useState(false);
 
   const software = data?.software;
   useDocumentTitle(software?.name ?? '软件详情');
@@ -114,6 +127,43 @@ export function SoftwareDetail() {
     () => (data?.advisories ?? []).filter((item) => openStatuses.includes(item.status)),
     [data?.advisories],
   );
+
+  const toggleTechNode = async (nodeId: string, linked: boolean) => {
+    if (!software) return;
+    setTechBusy(true);
+    try {
+      await api.post(`/tech/nodes/${nodeId}/software`, {
+        softwareId: software.id,
+        linked,
+      });
+      push(linked ? '已关联技术知识' : '已解除技术知识关联');
+      await refetch(true);
+    } catch (linkError) {
+      push(linkError instanceof Error ? linkError.message : '操作失败', 'error');
+    } finally {
+      setTechBusy(false);
+    }
+  };
+
+  const markTechReview = async (nodeId: string, nodeName: string) => {
+    if (
+      !window.confirm(
+        `将「${nodeName}」标记为待核实？\n\n只会更新这个节点的状态，不会修改 Markdown 正文，也不会自动标记其他关联节点。`,
+      )
+    ) {
+      return;
+    }
+    setTechBusy(true);
+    try {
+      await api.patch(`/tech/nodes/${nodeId}`, { contentStatus: 'needs_review' });
+      push(`「${nodeName}」已标记为待核实`);
+      await refetch(true);
+    } catch (reviewError) {
+      push(reviewError instanceof Error ? reviewError.message : '标记失败', 'error');
+    } finally {
+      setTechBusy(false);
+    }
+  };
 
   const setTab = (next: Tab) => {
     const params = new URLSearchParams(searchParams);
@@ -406,6 +456,7 @@ export function SoftwareDetail() {
       </div>
 
       {tab === 'overview' && (
+        <>
         <div className="detail-grid">
           <div className="flex flex-col gap-3.5">
             <section className="panel">
@@ -576,6 +627,106 @@ export function SoftwareDetail() {
             )}
           </div>
         </div>
+
+        <section className="panel mt-4 software-tech-panel" id="tech-knowledge">
+          <div className="panel-head">
+            <div>
+              <span className="eyebrow">Linked knowledge</span>
+              <h3>关联技术知识</h3>
+            </div>
+            <Network size={15} />
+          </div>
+          <div className="panel-body">
+            {data.techNodes.length === 0 ? (
+              <p className="software-tech-empty">
+                还没有关联技术节点。关联后可以在这里直接查看文档状态和验证信息。
+              </p>
+            ) : (
+              <div className="software-tech-grid">
+                {data.techNodes.map((node) => (
+                  <div key={node.id} className="software-tech-card">
+                    <Link to={`/tech/nodes/${node.id}`} className="software-tech-card-link">
+                      <span className="software-tech-card-head">
+                        <strong>{node.name}</strong>
+                        <span className={`content-badge content-${node.contentStatus}`}>
+                          {contentStatusLabels[node.contentStatus]}
+                        </span>
+                      </span>
+                      <span className="software-tech-meta">
+                        {node.domainName} · {techNodeTypeLabels[node.nodeType]} ·{' '}
+                        {masteryLabels[node.masteryStatus]}
+                      </span>
+                      <span className="software-tech-meta">
+                        {node.applicableVersions ? `适用 ${node.applicableVersions}` : '未标注适用版本'}
+                        {node.verifiedVersion ? ` · 已验证 ${node.verifiedVersion}` : ''}
+                      </span>
+                      <span className="software-tech-open">
+                        <BookOpen size={11} /> 查看技术文档
+                      </span>
+                    </Link>
+                    {node.hasContent && (
+                      <button
+                        type="button"
+                        className="software-tech-review"
+                        disabled={techBusy || node.contentStatus === 'needs_review'}
+                        onClick={() => void markTechReview(node.id, node.name)}
+                      >
+                        {node.contentStatus === 'needs_review'
+                          ? '已标记待核实'
+                          : '检查文档是否需要更新'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {(techCatalog.data?.items.length ?? 0) > 0 && (
+              <div className="tech-link-picker software-tech-picker">
+                <select
+                  className="field-input"
+                  value={techPick}
+                  onChange={(event) => setTechPick(event.target.value)}
+                  aria-label="选择技术节点"
+                >
+                  <option value="">选择要关联的技术节点…</option>
+                  {techCatalog.data!.items
+                    .filter((node) => !data.techNodes.some((linked) => linked.id === node.id))
+                    .map((node) => (
+                      <option key={node.id} value={node.id}>
+                        {node.name}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={!techPick || techBusy}
+                  onClick={() => {
+                    if (!techPick) return;
+                    void toggleTechNode(techPick, true);
+                    setTechPick('');
+                  }}
+                >
+                  关联
+                </button>
+              </div>
+            )}
+            {data.techNodes.length > 0 && (
+              <div className="software-tech-unlink">
+                {data.techNodes.map((node) => (
+                  <button
+                    key={node.id}
+                    className="btn btn-ghost btn-sm"
+                    disabled={techBusy}
+                    onClick={() => void toggleTechNode(node.id, false)}
+                  >
+                    解除「{node.name}」
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+        </>
       )}
 
       {tab === 'releases' && (

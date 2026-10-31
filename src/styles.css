@@ -50,7 +50,7 @@ html {
   /* Fluid type scale: stays at the user's preferred base on small screens and
      grows slightly on wide desktops. All component sizes are expressed in rem,
      so the whole interface scales from this one value. */
-  font-size: clamp(100%, calc(85% + 0.3vw), 112.5%);
+  font-size: clamp(93.75%, calc(78% + 0.22vw), 100%);
   background: var(--paper);
   -webkit-text-size-adjust: 100%;
 }
@@ -1761,7 +1761,7 @@ a {
   background: transparent;
   outline: 0;
   color: var(--ink);
-  font-size: 0.84375rem;
+  font-size: 0.78125rem;
 }
 
 .inline-search input::placeholder {
@@ -2153,7 +2153,7 @@ a {
   border: 0;
   background: transparent;
   outline: 0;
-  font-size: 1rem;
+  font-size: 0.90625rem;
 }
 
 .search-palette-input kbd {
@@ -6150,6 +6150,125 @@ a {
 .tech-link-picker .field-input { min-width: 0; height: 31px; flex: 1; font-size: 0.75rem; }
 .tech-link-picker .btn { flex: 0 0 auto; }
 
+.tech-asset-event { color: var(--signal-deep) !important; }
+
+/* ---------- Software ↔ technical knowledge ---------- */
+.software-tech-empty {
+  margin: 0;
+  color: var(--muted-2);
+  font-size: 0.75rem;
+  line-height: 1.7;
+}
+
+.software-tech-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.software-tech-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px 11px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.software-tech-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 4px 12px rgb(31 45 38 / 5%);
+}
+
+.software-tech-card-link {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.software-tech-review {
+  margin-top: 3px;
+  border-top: 1px solid #edf0ea;
+  padding: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.65625rem;
+  text-align: left;
+}
+
+.software-tech-review:hover:not(:disabled) { color: var(--signal-deep); }
+.software-tech-review:disabled { cursor: default; opacity: 0.55; }
+
+.software-tech-card-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.software-tech-card-head strong {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 0.78125rem;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.software-tech-meta {
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 0.65625rem;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.software-tech-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  color: var(--signal-deep);
+  font-size: 0.65625rem;
+  font-weight: 540;
+}
+
+.software-tech-unlink {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.software-tech-picker { margin-top: 12px; }
+
+.event-tech-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  color: var(--muted-2);
+  font-size: 0.65625rem;
+}
+
+.event-tech-links a {
+  border-radius: 4px;
+  background: var(--calm-soft);
+  padding: 1px 5px;
+  color: var(--calm);
+  font-weight: 540;
+}
+
+.event-tech-links a:hover { background: #dfeae2; }
+
+.event-tech-more { color: var(--muted-2); }
+
 .tech-view-link-list { display: flex; flex-direction: column; }
 
 .tech-view-link {
@@ -6824,7 +6943,7 @@ a {
 
 .tech-doc-meta {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
 }
 
@@ -7412,8 +7531,11 @@ a {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .md-workspace[data-mode='edit'] .md-pane-edit,
-  .md-workspace[data-mode='preview'] .md-pane-preview {
+  /* Mobile visibility is controlled only by the mobile tab. Desktop edit /
+     preview modes must not be able to hide both panes after a viewport
+     resize or rotation. */
+  .md-workspace .md-pane-edit,
+  .md-workspace .md-pane-preview {
     display: block;
   }
 

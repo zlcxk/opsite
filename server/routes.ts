@@ -52,6 +52,7 @@ import {
   getSoftwareDetail,
   getSoftwareSummary,
   listSoftware,
+  listSoftwareTechNodes,
   updateSoftware,
 } from './services/software.js';
 import { listJobs, syncAllActive, syncSoftware } from './services/sync.js';
@@ -139,6 +140,7 @@ import {
   updateNode,
   updateNodeCognition,
   updateView,
+  verifyNodeContent,
 } from './services/tech.js';
 import {
   DiscoveryRequestError,
@@ -354,6 +356,7 @@ const techNodeSchema = z.object({
   contentStatus: z.enum(techContentStatuses).optional(),
   contentSource: z.enum(techContentSources).optional().nullable(),
   applicableVersions: z.string().trim().max(500).optional().nullable(),
+  verifiedVersion: z.string().trim().max(120).optional().nullable(),
   masteryStatus: z.enum(techMasteryStatuses).optional(),
   focusLevel: z.enum(techFocusLevels).optional(),
 });
@@ -386,6 +389,9 @@ const techMoveSchema = z.object({
 });
 
 const techArchiveSchema = z.object({ archived: z.boolean() });
+const techVerifySchema = z.object({
+  version: z.string().trim().max(120).optional().nullable(),
+});
 
 const techRelationSchema = z.object({
   sourceNodeId: z.string().trim().min(1).max(100),
@@ -432,6 +438,7 @@ const techNodeListSchema = z.object({
   mastery: z.enum(techMasteryStatuses).optional(),
   contentStatus: z.enum(techContentStatuses).optional(),
   hasContent: z.enum(['true', 'false']).optional(),
+  staleDays: z.coerce.number().int().min(1).max(3650).optional(),
   focus: z.enum(['true', 'false']).optional(),
   status: z.enum(['active', 'archived', 'all']).optional(),
   limit: z.coerce.number().int().min(1).max(300).optional(),
@@ -615,16 +622,19 @@ router.get('/dashboard', (_req, res) => {
 router.get('/catalog', (req, res) => {
   const q = String(req.query.q ?? '').trim().toLowerCase();
   const category = String(req.query.category ?? '').trim();
+  const coverage = String(req.query.coverage ?? '').trim();
   let items = catalog;
   if (q) {
     items = items.filter(
       (item) =>
         item.name.toLowerCase().includes(q) ||
         item.aliases.some((alias) => alias.toLowerCase().includes(q)) ||
+        item.tags.some((tag) => tag.toLowerCase().includes(q)) ||
         item.description.toLowerCase().includes(q),
     );
   }
   if (category) items = items.filter((item) => item.category === category);
+  if (coverage) items = items.filter((item) => item.coverage.level === coverage);
   res.json(items);
 });
 
@@ -762,7 +772,12 @@ router.get('/events', (req, res) => {
     limit: req.query.limit ? Number(req.query.limit) : 60,
     offset: req.query.offset ? Number(req.query.offset) : 0,
   });
-  res.json(events);
+  res.json(
+    events.map((event) => ({
+      ...event,
+      techNodes: listSoftwareTechNodes(event.softwareId),
+    })),
+  );
 });
 
 router.patch('/events/:id/read', (req, res) => {
@@ -1345,6 +1360,16 @@ router.patch('/tech/nodes/:id/cognition', (req, res) => {
   if (!body) return;
   try {
     res.json(updateNodeCognition(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/nodes/:id/verify', (req, res) => {
+  const body = parseBody(techVerifySchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(verifyNodeContent(req.params.id, body));
   } catch (error) {
     if (!sendTechError(res, error)) throw error;
   }

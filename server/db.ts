@@ -570,6 +570,8 @@ CREATE TABLE IF NOT EXISTS tech_nodes (
   content_source TEXT,
   applicable_versions TEXT,
   content_updated_at TEXT,
+  content_verified_at TEXT,
+  verified_version TEXT,
   mastery_status TEXT NOT NULL DEFAULT 'unknown',
   focus_level TEXT NOT NULL DEFAULT 'normal',
   status TEXT NOT NULL DEFAULT 'active',
@@ -665,6 +667,10 @@ ensureColumn('tech_nodes', 'content_status', "TEXT NOT NULL DEFAULT 'missing'");
 ensureColumn('tech_nodes', 'content_source', 'TEXT');
 ensureColumn('tech_nodes', 'applicable_versions', 'TEXT');
 ensureColumn('tech_nodes', 'content_updated_at', 'TEXT');
+// Verification is deliberately separate from "content updated": editing text
+// must not imply that the described behaviour was re-checked.
+ensureColumn('tech_nodes', 'content_verified_at', 'TEXT');
+ensureColumn('tech_nodes', 'verified_version', 'TEXT');
 db.prepare(
   `UPDATE tech_nodes SET content_status = 'missing'
    WHERE content_markdown IS NULL OR TRIM(content_markdown) = ''`,

@@ -32,6 +32,7 @@ import type {
 } from '../../shared/types.js';
 import { db, nowIso } from '../db.js';
 import { getDiscoveryCandidate } from './discovery.js';
+import { listEvents } from './events.js';
 import { getRadarItem } from './notes.js';
 import { listNotes } from './notes.js';
 import { getSoftwareSummary } from './software.js';
@@ -125,6 +126,8 @@ interface NodeRow {
   content_source: TechContentSource | null;
   applicable_versions: string | null;
   content_updated_at: string | null;
+  content_verified_at: string | null;
+  verified_version: string | null;
   mastery_status: TechMasteryStatus;
   focus_level: TechFocusLevel;
   status: 'active' | 'archived';
@@ -244,6 +247,8 @@ function mapNode(row: NodeRow, childCount: number): TechNode {
     contentSource: row.content_source,
     applicableVersions: row.applicable_versions,
     contentUpdatedAt: row.content_updated_at,
+    contentVerifiedAt: row.content_verified_at,
+    verifiedVersion: row.verified_version,
     createdAt: row.created_at,
   };
 }
@@ -583,6 +588,8 @@ export interface NodeListOptions {
   focus?: boolean;
   contentStatus?: TechContentStatus;
   hasContent?: boolean;
+  /** Content whose last verification is older than this many days (or absent). */
+  staleDays?: number;
   status?: 'active' | 'archived' | 'all';
   limit?: number;
   offset?: number;
@@ -625,6 +632,15 @@ export function listNodes(options: NodeListOptions = {}): TechNodeListResponse {
       clauses.push("content_markdown IS NOT NULL AND TRIM(content_markdown) != '' AND content_status = ?");
       params.push(options.contentStatus);
     }
+  }
+  if (options.staleDays && options.staleDays > 0) {
+    const cutoff = new Date(Date.now() - options.staleDays * 86_400_000).toISOString();
+    clauses.push(
+      `(content_markdown IS NOT NULL AND TRIM(content_markdown) != ''
+        AND content_status IN ('complete', 'needs_review')
+        AND (content_verified_at IS NULL OR content_verified_at < ?))`,
+    );
+    params.push(cutoff);
   }
   const term = options.q?.trim().toLowerCase();
   if (term) {
@@ -731,7 +747,10 @@ export function listNodeSoftware(nodeId: string): TechSoftwareLink[] {
   const links: TechSoftwareLink[] = [];
   for (const row of rows) {
     const software = getSoftwareSummary(row.software_id);
-    if (software) links.push({ software, linkedAt: row.created_at });
+    if (software) {
+      const recentEvent = listEvents({ softwareId: row.software_id, limit: 1 })[0] ?? null;
+      links.push({ software, linkedAt: row.created_at, recentEvent });
+    }
   }
   return links;
 }
@@ -818,6 +837,7 @@ export interface NodeInput {
   contentStatus?: TechContentStatus;
   contentSource?: TechContentSource | null;
   applicableVersions?: string | null;
+  verifiedVersion?: string | null;
   masteryStatus?: TechMasteryStatus;
   focusLevel?: TechFocusLevel;
 }
@@ -903,26 +923,45 @@ export function updateNode(
     nextContentStatus = 'missing';
   } else if (nextContentStatus === 'missing') {
     nextContentStatus = 'draft';
-  } else if (markdownProvided && markdownChanged && input.contentStatus === undefined) {
-    // Editing an already-complete document must not leave it looking verified.
-    if (!hasMarkdownContent(existing.content_markdown) || existing.content_status === 'complete') {
-      nextContentStatus = 'draft';
-    } else {
-      nextContentStatus = existing.content_status;
-    }
+  } else if (
+    markdownProvided &&
+    markdownChanged &&
+    nextContentStatus === 'complete' &&
+    input.contentStatus === undefined
+  ) {
+    // Editing a verified document invalidates the verification. Keep the old
+    // verification timestamp as history, but move the status to draft.
+    nextContentStatus = 'draft';
   }
+  const nextVerifiedVersion =
+    input.verifiedVersion !== undefined
+      ? input.verifiedVersion?.trim() || null
+      : existing.verified_version;
+  const enteredVerification =
+    input.contentStatus === 'complete' &&
+    (existing.content_status !== 'complete' || nextVerifiedVersion !== existing.verified_version);
+  // A completed document needs a verification record. Use the version the
+  // author says they checked; if none was provided, keep the previous one.
+  const nextVerifiedAt =
+    nextContentStatus === 'complete'
+      ? enteredVerification
+        ? timestamp
+        : existing.content_verified_at ?? (input.contentStatus === 'complete' ? timestamp : null)
+      : existing.content_verified_at;
   const contentChanged =
     markdownChanged ||
     input.contentStatus !== undefined ||
     input.contentSource !== undefined ||
-    input.applicableVersions !== undefined;
+    input.applicableVersions !== undefined ||
+    input.verifiedVersion !== undefined;
   db.prepare(
     `UPDATE tech_nodes SET
       name = ?, node_type = ?, summary = ?, description = ?, technical_role = ?, core_principle = ?,
       solved_problem = ?, key_mechanism = ?, use_cases = ?, common_issues = ?, docs_url = ?, repo_url = ?,
       reference_links = ?, personal_notes = ?, research_questions = ?,
       content_markdown = ?, content_status = ?, content_source = ?, applicable_versions = ?,
-      content_updated_at = ?, mastery_status = ?, focus_level = ?,
+      content_updated_at = ?, content_verified_at = ?, verified_version = ?,
+      mastery_status = ?, focus_level = ?,
       updated_at = ?
      WHERE id = ?`,
   ).run(
@@ -952,11 +991,35 @@ export function updateNode(
       ? input.applicableVersions?.trim() || null
       : existing.applicable_versions,
     contentChanged ? timestamp : existing.content_updated_at,
+    nextVerifiedAt,
+    nextVerifiedVersion,
     input.masteryStatus ?? existing.mastery_status,
     input.focusLevel ?? existing.focus_level,
     timestamp,
     id,
   );
+  return getNode(id)!;
+}
+
+/**
+ * Explicit "I checked this document" action. It records when and against
+ * which product version the verification happened, without touching the
+ * Markdown body itself.
+ */
+export function verifyNodeContent(
+  id: string,
+  input: { version?: string | null } = {},
+): TechNode {
+  const existing = requireNode(id);
+  if (!hasMarkdownContent(existing.content_markdown)) {
+    throw new TechRequestError('没有文档内容，无法验证', 400);
+  }
+  const timestamp = nowIso();
+  const version = input.version?.trim() || existing.verified_version || null;
+  db.prepare(
+    `UPDATE tech_nodes SET content_status = 'complete', content_verified_at = ?,
+       verified_version = ?, updated_at = ? WHERE id = ?`,
+  ).run(timestamp, version, timestamp, id);
   return getNode(id)!;
 }
 

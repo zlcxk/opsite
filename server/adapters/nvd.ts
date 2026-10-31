@@ -115,14 +115,15 @@ function parseRanges(vulnerability: NvdVulnerability): VersionRange[] {
 
 export async function fetchNvd(context: AdapterContext): Promise<AdapterResult> {
   const keyword = context.config.keyword?.trim();
-  if (!keyword) throw new Error('缺少 NVD 关键词');
+  const cpeName = context.config.cpeName?.trim();
+  if (!keyword && !cpeName) throw new Error('缺少 NVD 关键词或 CPE');
 
   const params = new URLSearchParams({
-    keywordSearch: keyword,
     resultsPerPage: '50',
     noRejected: '',
   });
-  if (context.config.cpeName?.trim()) params.set('cpeName', context.config.cpeName.trim());
+  if (keyword) params.set('keywordSearch', keyword);
+  if (cpeName) params.set('cpeName', cpeName);
 
   const headers: Record<string, string> = {};
   if (process.env.NVD_API_KEY) headers.apiKey = process.env.NVD_API_KEY;
@@ -160,7 +161,7 @@ export async function fetchNvd(context: AdapterContext): Promise<AdapterResult> 
         kevDueDate: null,
         affectedRanges: parseRanges(item),
         fixedVersions: [],
-        confidence: 'medium',
+        confidence: cpeName ? 'high' : 'medium',
         sourceType: 'nvd',
         raw: item,
       } satisfies RawAdvisory;
@@ -171,6 +172,6 @@ export async function fetchNvd(context: AdapterContext): Promise<AdapterResult> 
   return {
     advisories: rows,
     itemCount: rows.length,
-    note: `关键词命中 ${data.totalResults ?? rows.length} 条，取最近 ${rows.length} 条`,
+    note: `${cpeName ? 'CPE 精确匹配' : '关键词命中'} ${data.totalResults ?? rows.length} 条，取最近 ${rows.length} 条`,
   };
 }

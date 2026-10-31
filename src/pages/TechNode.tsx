@@ -87,6 +87,7 @@ export function TechNode() {
   const [softwarePick, setSoftwarePick] = useState('');
   const [radarPick, setRadarPick] = useState('');
   const [docOpen, setDocOpen] = useState(false);
+  const [docDirty, setDocDirty] = useState(false);
   const docEditorRef = useRef<TechDocEditorHandle | null>(null);
 
   useEffect(() => {
@@ -121,10 +122,17 @@ export function TechNode() {
     await refetch(true);
   };
 
-  const closeDocEditor = () => {
-    if (docEditorRef.current?.isDirty() && !window.confirm('技术文档还有未保存的更改，确定关闭？')) {
-      return;
+  const closeDocEditor = async () => {
+    const editor = docEditorRef.current;
+    if (editor?.isDirty()) {
+      const saved = await editor.save();
+      if (!saved) return;
     }
+    setDocOpen(false);
+  };
+
+  const discardDocEditor = () => {
+    if (!window.confirm('放弃尚未保存的文档更改并关闭？')) return;
     setDocOpen(false);
   };
 
@@ -418,6 +426,11 @@ export function TechNode() {
             <div className="panel-body">
               <div className="tech-doc-facts">
                 <span>适用版本：{node.applicableVersions || '未标注'}</span>
+                <span>已验证版本：{node.verifiedVersion || '尚未验证'}</span>
+                <span>
+                  最后验证：
+                  {node.contentVerifiedAt ? formatDateTime(node.contentVerifiedAt) : '尚未验证'}
+                </span>
                 <span>内容来源：{node.contentSource ? contentSourceLabels[node.contentSource] : '未标注'}</span>
                 <span>
                   内容更新：{node.contentUpdatedAt ? formatDateTime(node.contentUpdatedAt) : '尚未撰写'}
@@ -661,10 +674,16 @@ export function TechNode() {
                         <strong>{link.software.name}</strong>
                         <em>
                           {link.software.currentVersion ? `当前 ${link.software.currentVersion}` : '未记录当前版本'}
+                          {link.software.latestVersion ? ` · 最新 ${link.software.latestVersion}` : ''}
                           {link.software.lifecycle.status !== 'unknown'
                             ? ` · ${supportMeta[link.software.lifecycle.status].label}`
                             : ''}
                         </em>
+                        {link.recentEvent && (
+                          <em className="tech-asset-event">
+                            最近情报：{link.recentEvent.title}
+                          </em>
+                        )}
                       </Link>
                       <button
                         className="icon-btn"
@@ -867,10 +886,21 @@ export function TechNode() {
         full
         footer={
           <div className="tech-doc-modal-foot">
-            <span>关闭前会自动保存已编辑的内容；标记「已完善」即表示你已人工确认。</span>
-            <button className="btn btn-secondary" onClick={closeDocEditor}>
-              完成
-            </button>
+            <span>
+              {docDirty
+                ? '还有未保存的更改。点击「保存并关闭」会先保存，失败时保留窗口。'
+                : '所有更改已保存。'}
+            </span>
+            <div className="flex items-center gap-2">
+              {docDirty && (
+                <button className="btn btn-ghost" onClick={discardDocEditor}>
+                  放弃更改
+                </button>
+              )}
+              <button className="btn btn-secondary" onClick={() => void closeDocEditor()}>
+                {docDirty ? '保存并关闭' : '关闭'}
+              </button>
+            </div>
           </div>
         }
       >
@@ -878,6 +908,7 @@ export function TechNode() {
           ref={docEditorRef}
           node={node}
           onSaved={applySavedDoc}
+          onDirtyChange={setDocDirty}
           minHeight={460}
         />
       </Modal>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Activity, ArrowUpRight, BellOff, CheckCheck, Filter, Siren } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Activity, ArrowUpRight, BellOff, BookOpen, CheckCheck, Filter, Siren } from 'lucide-react';
 import type { EventType, IntelEvent, Priority, UserEventStatus } from '@shared/types';
 import { useApi, useDocumentTitle } from '../lib/hooks';
 import { api } from '../lib/api';
@@ -277,6 +277,23 @@ export function Events() {
                   <span className="event-type">{typeMeta[event.type]}</span>
                   {event.summary && <span className="event-summary">{event.summary}</span>}
                 </div>
+                {event.techNodes && event.techNodes.length > 0 && (
+                  <div
+                    className="event-tech-links"
+                    onClick={(clickEvent) => clickEvent.stopPropagation()}
+                  >
+                    <BookOpen size={10} />
+                    <span>相关技术知识</span>
+                    {event.techNodes.slice(0, 4).map((node) => (
+                      <Link key={node.id} to={`/tech/nodes/${node.id}`}>
+                        {node.name}
+                      </Link>
+                    ))}
+                    {event.techNodes.length > 4 && (
+                      <span className="event-tech-more">+{event.techNodes.length - 4}</span>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="event-center-owner">
                 <strong>{event.softwareName}</strong>

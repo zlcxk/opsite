@@ -10,6 +10,7 @@ let seed: typeof import('./tech-seed.js');
 let tech: typeof import('./tech.js');
 let notes: typeof import('./notes.js');
 let content: typeof import('./tech-content.js');
+let software: typeof import('./software.js');
 
 beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opsite-tech-'));
@@ -19,6 +20,7 @@ beforeAll(async () => {
   tech = await import('./tech.js');
   notes = await import('./notes.js');
   content = await import('./tech-content.js');
+  software = await import('./software.js');
   seed.seedTechnologyTemplates();
 });
 
@@ -42,16 +44,38 @@ function findTreeNode(nodes: TechTreeNode[], name: string): TechTreeNode | null 
 }
 
 describe('technology map seed', () => {
-  it('seeds Kubernetes and Prometheus without duplicating on reapply', () => {
+  it('seeds the built-in technology domains without duplicating on reapply', () => {
     const overview = tech.getTechOverview();
-    expect(overview.domains.map((domain) => domain.name)).toEqual(['Kubernetes', 'Prometheus']);
-    expect(overview.stats.nodes).toBeGreaterThan(120);
+    expect(overview.domains.map((domain) => domain.name)).toEqual([
+      'Kubernetes',
+      'Prometheus',
+      '数据库与缓存',
+      '消息与流',
+      '可观测性与日志',
+      '发布与基础设施自动化',
+      '云原生基础设施',
+    ]);
+    expect(overview.stats.nodes).toBeGreaterThan(140);
 
     const again = seed.applyTechTemplate('kubernetes');
     expect(again?.inserted.domains).toBe(0);
     expect(again?.inserted.nodes).toBe(0);
     expect(again?.inserted.views).toBe(0);
     expect(again?.inserted.relations).toBe(0);
+  });
+
+  it('ships P2 domains with draft documents for every core node', () => {
+    const expected = ['数据库与缓存', '消息与流', '可观测性与日志', '发布与基础设施自动化', '云原生基础设施'];
+    for (const name of expected) {
+      const domain = tech.listDomainSummaries().find((entry) => entry.name === name);
+      expect(domain, name).toBeTruthy();
+      const nodes = tech.listNodes({ domainId: domain!.id, limit: 100 }).items;
+      expect(nodes.length, name).toBe(4);
+      expect(nodes.every((node) => node.hasContent && node.contentStatus === 'draft'), name).toBe(true);
+      for (const node of nodes) {
+        expect(tech.getNodeDetail(node.id)?.node.applicableVersions, `${name}/${node.name}`).toBeTruthy();
+      }
+    }
   });
 
   it('builds the Kubernetes tree with the expected hierarchy', () => {
@@ -223,7 +247,7 @@ describe('technology knowledge content', () => {
 
     expect(content.contentEntryForNode('k8s-apiserver')?.contentMarkdown).toContain('准入');
     expect(content.contentEntryForNode('prom-tsdb')?.contentMarkdown).toContain('WAL');
-    expect(content.TECH_CONTENT_ENTRIES).toHaveLength(160);
+    expect(content.TECH_CONTENT_ENTRIES).toHaveLength(180);
 
     const docs = dbModule.db
       .prepare(
@@ -324,6 +348,94 @@ describe('technology knowledge content', () => {
 
     const search = tech.listNodes({ q: 'histogram_quantile', limit: 300 });
     expect(search.items.some((node) => node.id === 'prom-promql')).toBe(true);
+  });
+});
+
+describe('content verification and stale review', () => {
+  it('records an explicit verification without changing the Markdown body', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const node = tech.createNode(domain.id, { name: '验证记录测试节点', nodeType: 'concept' });
+    const markdown = '## 定义\n\n用于验证状态测试。';
+    tech.updateNode(node.id, { contentMarkdown: markdown, contentStatus: 'draft' });
+
+    const verified = tech.verifyNodeContent(node.id, { version: 'v1.32' });
+    expect(verified.contentStatus).toBe('complete');
+    expect(verified.contentMarkdown).toBe(markdown);
+    expect(verified.verifiedVersion).toBe('v1.32');
+    expect(verified.contentVerifiedAt).toBeTruthy();
+
+    tech.deleteNode(node.id);
+  });
+
+  it('requires content before verification', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const node = tech.createNode(domain.id, { name: '空文档验证测试节点', nodeType: 'concept' });
+    expect(() => tech.verifyNodeContent(node.id, { version: 'v1.0' })).toThrow();
+    tech.deleteNode(node.id);
+  });
+
+  it('retains the last verification when a complete document is edited', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const node = tech.createNode(domain.id, { name: '验证历史测试节点', nodeType: 'concept' });
+    tech.updateNode(node.id, { contentMarkdown: '# 第一版', contentStatus: 'draft' });
+    const verified = tech.verifyNodeContent(node.id, { version: 'v2.0' });
+
+    const edited = tech.updateNode(node.id, { contentMarkdown: '# 第二版' });
+    expect(edited.contentStatus).toBe('draft');
+    expect(edited.verifiedVersion).toBe('v2.0');
+    expect(edited.contentVerifiedAt).toBe(verified.contentVerifiedAt);
+
+    tech.deleteNode(node.id);
+  });
+
+  it('filters long-unverified content by verification timestamp', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const node = tech.createNode(domain.id, { name: '长期未验证测试节点', nodeType: 'concept' });
+    tech.updateNode(node.id, { contentMarkdown: '# 内容', contentStatus: 'draft' });
+    tech.verifyNodeContent(node.id, { version: 'v1.0' });
+
+    const fresh = tech.listNodes({ domainId: domain.id, staleDays: 180, limit: 300 });
+    expect(fresh.items.some((entry) => entry.id === node.id)).toBe(false);
+
+    dbModule.db
+      .prepare('UPDATE tech_nodes SET content_verified_at = ? WHERE id = ?')
+      .run('2020-01-01T00:00:00.000Z', node.id);
+    const stale = tech.listNodes({ domainId: domain.id, staleDays: 180, limit: 300 });
+    expect(stale.items.some((entry) => entry.id === node.id)).toBe(true);
+
+    tech.deleteNode(node.id);
+  });
+});
+
+describe('software and technical knowledge links', () => {
+  it('does not duplicate a software link and exposes it from both sides', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Prometheus')!;
+    const node = tech.createNode(domain.id, { name: '软件关联测试节点', nodeType: 'component' });
+    const softwareId = software.createSoftware({ name: '关联测试软件', sources: [] });
+
+    tech.linkSoftware(node.id, softwareId, true);
+    tech.linkSoftware(node.id, softwareId, true);
+    const count = dbModule.db
+      .prepare('SELECT count(*) AS count FROM tech_node_software WHERE node_id = ? AND software_id = ?')
+      .get(node.id, softwareId) as { count: number };
+    expect(count.count).toBe(1);
+
+    expect(tech.listNodeSoftware(node.id).map((link) => link.software.id)).toEqual([softwareId]);
+    expect(software.listSoftwareTechNodes(softwareId).map((link) => link.id)).toEqual([node.id]);
+
+    tech.linkSoftware(node.id, softwareId, false);
+    expect(tech.listNodeSoftware(node.id)).toHaveLength(0);
+    dbModule.db.prepare('DELETE FROM software WHERE id = ?').run(softwareId);
+    tech.deleteNode(node.id);
+  });
+
+  it('keeps seed content priority explicit and ignores undefined overrides', () => {
+    const merged = content.mergeDefined(
+      { nodeId: 'merge-test', docsUrl: 'https://example.com/docs', repoUrl: 'https://github.com/a/b' },
+      { nodeId: 'merge-test', docsUrl: undefined, repoUrl: 'https://github.com/c/d' },
+    );
+    expect(merged.docsUrl).toBe('https://example.com/docs');
+    expect(merged.repoUrl).toBe('https://github.com/c/d');
   });
 });
 

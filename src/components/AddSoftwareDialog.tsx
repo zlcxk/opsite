@@ -45,9 +45,32 @@ const sourceDescriptions: Record<string, string> = {
   endoflife: '发布周期、支持状态与维护截止日期',
   github_releases: '稳定版与预发布版本、发布说明',
   github_advisories: 'GitHub 开源安全公告',
-  nvd: 'NVD 通用漏洞库，按关键词检索',
-  cisa_kev: '标记已遭实际利用的 CVE',
+  nvd: 'NVD 通用漏洞库，按关键词或 CPE 检索',
+  cisa_kev: '全局 KEV 目录，仅与本地已采集 CVE 交叉标记',
 };
+
+const coverageMeta = {
+  full: { label: '覆盖完整', className: 'pill-calm' },
+  partial: { label: '覆盖部分', className: 'pill-info' },
+  limited: { label: '覆盖有限', className: 'pill-neutral' },
+} as const;
+
+function sourceReady(draft: SourceDraft): boolean {
+  switch (draft.type) {
+    case 'endoflife':
+      return Boolean(draft.config.product?.trim());
+    case 'github_releases':
+      return Boolean(draft.config.repo?.trim());
+    case 'github_advisories':
+      return Boolean(draft.config.package?.trim());
+    case 'nvd':
+      return Boolean(draft.config.keyword?.trim() || draft.config.cpeName?.trim());
+    case 'cisa_kev':
+      return true;
+    default:
+      return Boolean(draft.config.url?.trim());
+  }
+}
 
 interface SourceDraft {
   type: SourceType;
@@ -119,6 +142,7 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
         !query ||
         item.name.toLowerCase().includes(query) ||
         item.aliases.some((alias) => alias.toLowerCase().includes(query)) ||
+        item.tags.some((tag) => tag.toLowerCase().includes(query)) ||
         item.description.toLowerCase().includes(query);
       return categoryMatch && queryMatch;
     });
@@ -175,8 +199,8 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
       if (source.type === 'github_advisories' && !source.config.package?.trim()) {
         return '请填写 GitHub Advisory 软件包名称';
       }
-      if (source.type === 'nvd' && !source.config.keyword?.trim()) {
-        return '请填写 NVD 关键词';
+      if (source.type === 'nvd' && !source.config.keyword?.trim() && !source.config.cpeName?.trim()) {
+        return '请填写 NVD 关键词或 CPE Name';
       }
     }
     return null;
@@ -349,7 +373,16 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
                         style={{ background: categoryColor(item.category) }}
                       />
                     </span>
-                    <span className="mt-0.5 block text-[0.6875rem] text-[var(--muted)]">{item.category}</span>
+                    <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[0.6875rem] text-[var(--muted)]">
+                      {item.category}
+                      <span
+                        className={`pill ${coverageMeta[item.coverage.level].className}`}
+                        style={{ height: 17, fontSize: '0.625rem', padding: '0 5px' }}
+                        title={item.coverage.notes.join(' · ')}
+                      >
+                        {coverageMeta[item.coverage.level].label}
+                      </span>
+                    </span>
                     <span className="mt-1.5 line-clamp-2 block text-[0.71875rem] leading-relaxed text-[var(--muted)]">
                       {item.description}
                     </span>
@@ -357,6 +390,11 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
                       {item.sources.slice(0, 3).map((source) => (
                         <span className="tag" key={source.type}>
                           {source.label}
+                        </span>
+                      ))}
+                      {item.tags.slice(0, 2).map((tag) => (
+                        <span className="tag" key={`tag-${tag}`}>
+                          {tag}
                         </span>
                       ))}
                     </span>
@@ -393,6 +431,31 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
                     {selected.repo ? ` · ${selected.repo.replace('https://github.com/', '')}` : ''}
                   </div>
                   <p className="mt-1.5 text-[0.71875rem] leading-relaxed text-[var(--muted)]">{selected.description}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className={`pill ${coverageMeta[selected.coverage.level].className}`}>
+                      {coverageMeta[selected.coverage.level].label}
+                    </span>
+                    {(
+                      [
+                        ['生命周期', selected.coverage.lifecycle],
+                        ['版本发布', selected.coverage.releases],
+                        ['漏洞公告', selected.coverage.advisories],
+                        ['KEV', selected.coverage.kev],
+                      ] as const
+                    ).map(([label, available]) => (
+                      <span
+                        key={label}
+                        className={`pill ${available ? 'pill-calm' : 'pill-neutral'}`}
+                        style={{ height: 18, fontSize: '0.625rem' }}
+                      >
+                        {label}
+                        {available ? '' : ' 不可用'}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[0.6875rem] text-[var(--muted)]">
+                    {selected.coverage.notes.join(' · ') || '仅基础来源'}
+                  </p>
                 </div>
               </div>
             )
@@ -561,6 +624,12 @@ export function AddSoftwareDialog({ open, onClose, initialCatalogKey }: AddSoftw
                       <span className="flex flex-wrap items-center gap-2">
                         <strong className="text-[0.84375rem] font-[550]">{draft.label}</strong>
                         <span className="tag">{draft.type}</span>
+                        <span
+                          className={`pill ${sourceReady(draft) ? 'pill-calm' : 'pill-warn'}`}
+                          style={{ height: 18, fontSize: '0.65625rem' }}
+                        >
+                          {sourceReady(draft) ? '可用' : '待配置'}
+                        </span>
                         {draft.type === 'cisa_kev' && draft.enabled && (
                           <span className="pill pill-calm" style={{ height: 18, fontSize: '0.65625rem' }}>
                             <Check size={9} /> 建议开启

@@ -29,6 +29,10 @@ export interface SourceConfig {
   ecosystem?: string;
   keyword?: string;
   cpeName?: string;
+  /** How an NVD keyword was matched, used for confidence and UI hints. */
+  matchType?: 'keyword' | 'cpe';
+  /** Short human-readable basis for the source mapping. */
+  note?: string;
   feed?: string;
   url?: string;
 }
@@ -169,6 +173,7 @@ export interface IntelEvent {
   readAt: string | null;
   status: UserEventStatus;
   refId: string | null;
+  techNodes?: SoftwareTechNodeLink[];
 }
 
 export interface SyncJob {
@@ -400,8 +405,24 @@ export interface KnowledgeNote {
   updatedAt: string;
 }
 
+export interface SoftwareTechNodeLink {
+  id: string;
+  name: string;
+  domainId: string;
+  domainName: string;
+  nodeType: TechNodeType;
+  contentStatus: TechContentStatus;
+  hasContent: boolean;
+  masteryStatus: TechMasteryStatus;
+  applicableVersions: string | null;
+  verifiedVersion: string | null;
+  contentVerifiedAt: string | null;
+  contentUpdatedAt: string | null;
+}
+
 export interface SoftwareDetail {
   software: SoftwareSummary;
+  techNodes: SoftwareTechNodeLink[];
   releases: ReleaseRecord[];
   lifecycle: LifecycleRecord[];
   advisories: Advisory[];
@@ -417,16 +438,30 @@ export interface CatalogSource {
   config: SourceConfig;
 }
 
+export type CatalogCoverageLevel = 'full' | 'partial' | 'limited';
+
+export interface CatalogCoverage {
+  level: CatalogCoverageLevel;
+  lifecycle: boolean;
+  releases: boolean;
+  advisories: boolean;
+  kev: boolean;
+  /** Human-readable explanation derived from the actually enabled sources. */
+  notes: string[];
+}
+
 export interface CatalogItem {
   key: string;
   name: string;
   aliases: string[];
+  tags: string[];
   category: string;
   logoSlug: string | null;
   website: string | null;
   repo: string | null;
   description: string;
   watchLevel: WatchLevel;
+  coverage: CatalogCoverage;
   sources: CatalogSource[];
 }
 
@@ -909,6 +944,8 @@ export interface TechNode extends TechNodeSummary {
   contentSource: TechContentSource | null;
   applicableVersions: string | null;
   contentUpdatedAt: string | null;
+  contentVerifiedAt: string | null;
+  verifiedVersion: string | null;
   createdAt: string;
 }
 
@@ -979,6 +1016,7 @@ export interface TechViewSummary {
 export interface TechSoftwareLink {
   software: SoftwareSummary;
   linkedAt: string;
+  recentEvent: IntelEvent | null;
 }
 
 export interface TechRadarLink {

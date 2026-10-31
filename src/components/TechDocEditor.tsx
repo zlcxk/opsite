@@ -5,7 +5,15 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Check, CircleAlert, ExternalLink, FileText, RotateCcw, Save } from 'lucide-react';
+import {
+  BadgeCheck,
+  Check,
+  CircleAlert,
+  ExternalLink,
+  FileText,
+  RotateCcw,
+  Save,
+} from 'lucide-react';
 import type { TechContentSource, TechContentStatus, TechNode } from '@shared/types';
 import { api } from '../lib/api';
 import { formatDateTime } from '../lib/format';
@@ -29,6 +37,8 @@ interface BaseDoc {
   status: TechContentStatus;
   source: TechContentSource | '';
   versions: string;
+  verifiedVersion: string;
+  verifiedAt: string | null;
 }
 
 function baseFromNode(node: TechNode): BaseDoc {
@@ -37,6 +47,8 @@ function baseFromNode(node: TechNode): BaseDoc {
     status: node.contentStatus,
     source: node.contentSource ?? '',
     versions: node.applicableVersions ?? '',
+    verifiedVersion: node.verifiedVersion ?? '',
+    verifiedAt: node.contentVerifiedAt,
   };
 }
 
@@ -45,7 +57,9 @@ function sameDoc(a: BaseDoc, b: BaseDoc): boolean {
     a.markdown === b.markdown &&
     a.status === b.status &&
     a.source === b.source &&
-    a.versions === b.versions
+    a.versions === b.versions &&
+    a.verifiedVersion === b.verifiedVersion &&
+    a.verifiedAt === b.verifiedAt
   );
 }
 
@@ -66,6 +80,12 @@ export const TechDocEditor = forwardRef<
   const [saveError, setSaveError] = useState<string | null>(null);
   const inFlightRef = useRef<Promise<boolean> | null>(null);
   const dirty = !sameDoc(draft, base);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const baseRef = useRef(base);
+  baseRef.current = base;
   const nodeRef = useRef(node);
   nodeRef.current = node;
 
@@ -94,20 +114,24 @@ export const TechDocEditor = forwardRef<
   const runSave = async (silent: boolean): Promise<boolean> => {
     setSaveState('saving');
     setSaveError(null);
-    const payload: BaseDoc = { ...draft };
+    const payload: BaseDoc = { ...draftRef.current };
     try {
       const saved = await api.patch<TechNode>(`/tech/nodes/${nodeRef.current.id}`, {
         contentMarkdown: payload.markdown.trim() ? payload.markdown : null,
         contentStatus: payload.status,
         contentSource: payload.source || null,
         applicableVersions: payload.versions.trim() || null,
+        verifiedVersion: payload.verifiedVersion.trim() || null,
       });
       const next = {
         markdown: saved.contentMarkdown ?? '',
         status: saved.contentStatus,
         source: saved.contentSource ?? '',
         versions: saved.applicableVersions ?? '',
+        verifiedVersion: saved.verifiedVersion ?? '',
+        verifiedAt: saved.contentVerifiedAt,
       } satisfies BaseDoc;
+      baseRef.current = next;
       setBase(next);
       setDraft((current) => (sameDoc(current, payload) ? next : current));
       setSaveState('saved');
@@ -123,17 +147,28 @@ export const TechDocEditor = forwardRef<
     }
   };
 
-  const save = (silent = false): Promise<boolean> => {
-    // A save started moments ago (usually autosave) already contains the
-    // latest committed keystrokes. Share its result instead of failing.
-    if (inFlightRef.current) return inFlightRef.current;
-    if (!dirty) {
-      setSaveState('saved');
-      return Promise.resolve(true);
+  const save = async (silent = false): Promise<boolean> => {
+    // A save started moments ago (usually autosave) already contains some of
+    // the latest keystrokes. Wait for it, then save once more if the draft
+    // moved on while the request was in flight. Only one request is ever open.
+    if (inFlightRef.current) {
+      const first = await inFlightRef.current;
+      if (!first) return false;
+      if (sameDoc(draftRef.current, baseRef.current)) return true;
+      return save(silent);
     }
-    if (draft.status === 'complete' && !draft.markdown.trim()) {
+    if (sameDoc(draftRef.current, baseRef.current)) {
+      setSaveState('saved');
+      return true;
+    }
+    const current = draftRef.current;
+    if (current.status === 'complete' && !current.markdown.trim()) {
       if (!silent) push('内容为空时无法标记为已完善', 'error');
-      return Promise.resolve(false);
+      return false;
+    }
+    if (current.status === 'complete' && !current.verifiedVersion.trim()) {
+      if (!silent) push('标记已完善前，请填写本次实际验证的版本', 'error');
+      return false;
     }
     const task = runSave(silent).finally(() => {
       inFlightRef.current = null;
@@ -142,7 +177,43 @@ export const TechDocEditor = forwardRef<
     return task;
   };
 
-  useImperativeHandle(ref, () => ({ save, isDirty: () => dirty }), [save, dirty]);
+  useImperativeHandle(ref, () => ({
+    save,
+    isDirty: () => !sameDoc(draftRef.current, baseRef.current),
+  }), [dirty]);
+
+  const verify = async () => {
+    const current = draftRef.current;
+    if (!current.markdown.trim()) {
+      push('没有文档内容，无法验证', 'error');
+      return;
+    }
+    if (!current.verifiedVersion.trim()) {
+      push('请填写本次实际验证的版本', 'error');
+      return;
+    }
+    const saved = await save(true);
+    if (!saved) return;
+    setSaveState('saving');
+    setSaveError(null);
+    try {
+      const verified = await api.post<TechNode>(`/tech/nodes/${nodeRef.current.id}/verify`, {
+        version: draftRef.current.verifiedVersion.trim(),
+      });
+      const next = baseFromNode(verified);
+      baseRef.current = next;
+      setBase(next);
+      setDraft(next);
+      setSaveState('saved');
+      onSaved?.(verified);
+      push(`文档已验证，当前状态为已完善（${next.verifiedVersion}）`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '验证失败';
+      setSaveState('error');
+      setSaveError(message);
+      push(message, 'error');
+    }
+  };
 
   useEffect(() => {
     // Stay on the failure state until the author retries, instead of hammering
@@ -224,6 +295,18 @@ export const TechDocEditor = forwardRef<
             placeholder="如 Kubernetes 1.28+"
           />
         </label>
+        <label className="field">
+          <span className="field-label">已验证版本</span>
+          <input
+            className="field-input"
+            value={draft.verifiedVersion}
+            onChange={(event) => setDraft({ ...draft, verifiedVersion: event.target.value })}
+            placeholder="如 1.34"
+          />
+          <span className="field-hint">
+            {draft.verifiedAt ? `上次验证 ${formatDateTime(draft.verifiedAt)}` : '尚未人工验证'}
+          </span>
+        </label>
       </div>
 
       {!draft.markdown.trim() && (
@@ -272,6 +355,14 @@ export const TechDocEditor = forwardRef<
               <ExternalLink size={12} /> 代码仓库
             </a>
           )}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => void verify()}
+            disabled={saveState === 'saving' || !draft.markdown.trim() || !draft.verifiedVersion.trim()}
+            title="确认内容已核对，记录验证时间和实际验证版本"
+          >
+            <BadgeCheck size={12} /> 验证知识
+          </button>
           {saveState === 'error' && (
             <button className="btn btn-secondary btn-sm" onClick={() => void save()}>
               <RotateCcw size={12} /> 重试

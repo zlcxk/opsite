@@ -4,6 +4,7 @@ import type {
   SoftwareDetail,
   SoftwareSource,
   SoftwareSummary,
+  SoftwareTechNodeLink,
   SourceConfig,
   SourceType,
   SyncJob,
@@ -257,10 +258,55 @@ export function listSoftware(options: { includeArchived?: boolean } = {}): Softw
   return rows.map(buildSoftwareSummary);
 }
 
+interface SoftwareTechNodeRow {
+  id: string;
+  name: string;
+  domain_id: string;
+  domain_name: string;
+  node_type: SoftwareTechNodeLink['nodeType'];
+  content_status: SoftwareTechNodeLink['contentStatus'];
+  content_markdown: string | null;
+  mastery_status: SoftwareTechNodeLink['masteryStatus'];
+  applicable_versions: string | null;
+  verified_version: string | null;
+  content_verified_at: string | null;
+  content_updated_at: string | null;
+}
+
+export function listSoftwareTechNodes(softwareId: string): SoftwareTechNodeLink[] {
+  const rows = db
+    .prepare(
+      `SELECT tn.id, tn.name, tn.domain_id, td.name AS domain_name, tn.node_type,
+         tn.content_status, tn.content_markdown, tn.mastery_status,
+         tn.applicable_versions, tn.verified_version, tn.content_verified_at, tn.content_updated_at
+       FROM tech_node_software tns
+       JOIN tech_nodes tn ON tn.id = tns.node_id AND tn.status = 'active'
+       JOIN tech_domains td ON td.id = tn.domain_id
+       WHERE tns.software_id = ?
+       ORDER BY td.sort_order, tn.sort_order, tn.name`,
+    )
+    .all(softwareId) as SoftwareTechNodeRow[];
+  return rows.map((node) => ({
+    id: node.id,
+    name: node.name,
+    domainId: node.domain_id,
+    domainName: node.domain_name,
+    nodeType: node.node_type,
+    contentStatus: node.content_markdown?.trim() ? node.content_status : 'missing',
+    hasContent: Boolean(node.content_markdown?.trim()),
+    masteryStatus: node.mastery_status,
+    applicableVersions: node.applicable_versions,
+    verifiedVersion: node.verified_version,
+    contentVerifiedAt: node.content_verified_at,
+    contentUpdatedAt: node.content_updated_at,
+  }));
+}
+
 export function getSoftwareDetail(id: string): SoftwareDetail | null {
   const row = getSoftwareRow(id);
   if (!row) return null;
   const summary = buildSoftwareSummary(row);
+  const techNodes = listSoftwareTechNodes(id);
   const sources = db
     .prepare('SELECT * FROM software_source WHERE software_id = ? ORDER BY created_at')
     .all(id) as SourceRow[];
@@ -323,6 +369,7 @@ export function getSoftwareDetail(id: string): SoftwareDetail | null {
 
   return {
     software: summary,
+    techNodes,
     releases,
     lifecycle,
     advisories,
