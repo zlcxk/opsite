@@ -79,6 +79,32 @@ describe('technology map seed', () => {
     }
   });
 
+  it('adds P5.4.3 P2 relations without overwriting user edits', () => {
+    const added = [
+      'rel-msg-kafka-clickhouse',
+      'rel-obs-otel-loki',
+      'rel-obs-grafana-clickhouse',
+    ];
+    for (const id of added) {
+      expect(
+        dbModule.db.prepare('SELECT 1 FROM tech_relations WHERE id = ?').get(id),
+        id,
+      ).toBeTruthy();
+    }
+
+    dbModule.db
+      .prepare(
+        "UPDATE tech_relations SET relation_type = 'depends_on', description = 'user edit' WHERE id = ?",
+      )
+      .run('rel-msg-kafka-clickhouse');
+    seed.seedTechnologyTemplates();
+    const row = dbModule.db
+      .prepare('SELECT relation_type, description FROM tech_relations WHERE id = ?')
+      .get('rel-msg-kafka-clickhouse') as { relation_type: string; description: string };
+    expect(row.relation_type).toBe('depends_on');
+    expect(row.description).toBe('user edit');
+  });
+
   it('builds the Kubernetes tree with the expected hierarchy', () => {
     const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
     const tree = tech.getDomainTree(domain.id);

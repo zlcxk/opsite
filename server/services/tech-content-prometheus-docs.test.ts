@@ -42,10 +42,13 @@ describe('P5.4.2 Prometheus version governance', () => {
   it('versions every document with a hash gate instead of rewriting in place', () => {
     expect(PROMETHEUS_DOCS).toHaveLength(29);
     for (const entry of PROMETHEUS_DOCS) {
-      expect(entry.version, entry.nodeId).toBe(2);
+      expect([2, 3], entry.nodeId).toContain(entry.version);
       expect(entry.replacesContentHash, entry.nodeId).toMatch(/^[0-9a-f]{64}$/);
       expect(entry.contentStatus, entry.nodeId).toBe('draft');
     }
+    expect(
+      PROMETHEUS_DOCS.filter((entry) => entry.version === 3).map((entry) => entry.nodeId).sort(),
+    ).toEqual(['prom-backup', 'prom-federation', 'prom-scale']);
   });
 
   it('adds a version section before the reference section in every document', () => {

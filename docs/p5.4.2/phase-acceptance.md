@@ -74,6 +74,8 @@
 
 ## 4. Prometheus 文档治理
 
+> 历史记录：P5.4.3 复核时将 `prom-federation`、`prom-scale`、`prom-backup` 三篇补足到 1,500 字符以上并提升到内容版本 3；其余 26 篇仍为版本 2。变更明细见 [P5.4.3 验收记录](../p5.4.3/phase-acceptance.md)。
+
 二十九篇文档全部提升为内容版本 2，并设置旧正文哈希。每个版本差异章节位于“参考资料”之前，只描述与本文主题相关的差异。
 
 | 文档组 | 数量 | `applicableVersions` |

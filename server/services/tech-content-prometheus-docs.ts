@@ -1021,9 +1021,9 @@ CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整
 
 ## 参考资料
 
-- [ServiceMonitor](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.ServiceMonitor)`,
+- [ServiceMonitor](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor)`,
     {
-      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      docsUrl: 'https://prometheus-operator.dev/docs/api-reference/api/',
       versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
       version: 2,
       replacesContentHash: '8579ca855eaf15159ff7f7387681df4facbb3bea79c9ad436472f7bbad8fdca0',
@@ -1101,9 +1101,9 @@ CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整
 
 ## 参考资料
 
-- [PodMonitor](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.PodMonitor)`,
+- [PodMonitor](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.PodMonitor)`,
     {
-      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      docsUrl: 'https://prometheus-operator.dev/docs/api-reference/api/',
       versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
       version: 2,
       replacesContentHash: 'e4dfbb9257ee88626fc5c7f0156093e54ddd710c55b6aa719b9c54a634d3cfe3',
@@ -1178,9 +1178,9 @@ CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整
 
 ## 参考资料
 
-- [ScrapeConfig](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1alpha1.ScrapeConfig)`,
+- [ScrapeConfig](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1alpha1.ScrapeConfig)`,
     {
-      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      docsUrl: 'https://prometheus-operator.dev/docs/api-reference/api/',
       versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
       version: 2,
       replacesContentHash: 'a60e9ad6920e2c966cc5f5811a48a7cf5eef340b28ef81311c0afaf991d3b8a9',
@@ -1259,7 +1259,7 @@ Probe 资源由 Operator 管理，blackbox_exporter 独立发布；Probe 的模�
 
 ## 参考资料
 
-- [Probe](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.Probe)
+- [Probe](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.Probe)
 - [Blackbox Exporter](https://github.com/prometheus/blackbox_exporter)`,
     {
       docsUrl: 'https://github.com/prometheus/blackbox_exporter',
@@ -1352,10 +1352,10 @@ PrometheusRule 的 validation 和 ruleFormat 行为随 Operator 版本变化；�
 
 ## 参考资料
 
-- [PrometheusRule](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.PrometheusRule)
+- [PrometheusRule](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.PrometheusRule)
 - [Alerting rules](https://prometheus.io/docs/prometheus/3.15/configuration/alerting_rules/)`,
     {
-      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      docsUrl: 'https://prometheus-operator.dev/docs/api-reference/api/',
       versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
       version: 2,
       replacesContentHash: '209ea3d7522b49dc1d208dbc6f00efdef51d6951506036a3f294a4b42c9b4d81',
@@ -1825,6 +1825,8 @@ scrape_configs:
 
 Prometheus Server 提供 /federate；relabel 控制标签；Remote Write 更适合长期集中存储；Thanos Query 提供全局查询。
 
+此外，联邦抓取的是下级当前样本，父子抓取间隔和时间戳不同会带来对齐误差；honor_labels 与 external_labels 要避免标签冲突。层级应尽量保持两层，层数越多，延迟和重复越难控制。
+
 ## 版本差异与兼容性
 
 本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
@@ -1844,8 +1846,8 @@ Prometheus Server 提供 /federate；relabel 控制标签；Remote Write 更适�
 - [Federation](https://prometheus.io/docs/prometheus/3.15/federation/)`,
     {
       docsUrl: 'https://prometheus.io/docs/prometheus/3.15/federation/',
-      version: 2,
-      replacesContentHash: 'c433f9c840db49414f09446c98584791472ed9297cabb4f51d5857daf9e07b9b',
+      version: 3,
+      replacesContentHash: 'f459f764c4c546279d0cd8ff0deb04cac356d81bba25508e514918b1b7b4fbd2',
     },
   ),
   d(
@@ -1895,6 +1897,8 @@ Prometheus Server 提供 /federate；relabel 控制标签；Remote Write 更适�
 
 Remote Write 是数据出口；Thanos/Mimir/VictoriaMetrics 是接收和查询层；Grafana 连接全局查询端点；Prometheus HA 提供本地冗余。
 
+Remote Write 不是同步复制：队列、重试和背压决定数据能否到达长期存储。选型时还要验证去重键、external_labels、查询下推和故障切换，而不能只比较压缩率。
+
 ## 版本差异与兼容性
 
 本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
@@ -1916,8 +1920,8 @@ Remote Write 是数据出口；Thanos/Mimir/VictoriaMetrics 是接收和查询�
 - [VictoriaMetrics](https://victoriametrics.com/)`,
     {
       docsUrl: 'https://thanos.io/',
-      version: 2,
-      replacesContentHash: 'fc8cd38d675fbb2e8f92a66d44b7ebff9ccf885810328497db7750bae97c0f6f',
+      version: 3,
+      replacesContentHash: '80be149e17b0032bd1d7740f7cf1b2af75f83e7d0cf0f27acea84d629a76ed29',
     },
   ),
   d(
@@ -2120,6 +2124,8 @@ tar czf prometheus-snapshot.tar.gz -C /prometheus/snapshots <name>
 - 恢复后 retention 设置错误，历史数据被立即删除。
 - 忽略 Alertmanager 静默和通知状态。
 
+备份窗口应与 retention 和 compactor 协调；快照只覆盖本地 TSDB，Thanos 等方案还要验证对象存储版本和 bucket 生命周期。恢复后需重新核对 external_labels，否则历史与实时数据可能重复或错位。
+
 ## 版本差异与兼容性
 
 本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
@@ -2140,8 +2146,8 @@ tar czf prometheus-snapshot.tar.gz -C /prometheus/snapshots <name>
 - [Storage](https://prometheus.io/docs/prometheus/3.15/storage/)`,
     {
       docsUrl: 'https://prometheus.io/docs/prometheus/3.15/querying/api/#snapshot',
-      version: 2,
-      replacesContentHash: '6f976a0fda434d4ec0d49caf82ed9b8b333651aca4482f2de2fe1051e2631e12',
+      version: 3,
+      replacesContentHash: '1db162738e1fcb06913a8010bd937d5af2fc2f7e8f7e4ac9b6f533cbc6a39a9b',
     },
   ),
   d(
