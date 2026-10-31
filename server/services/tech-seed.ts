@@ -641,7 +641,13 @@ const kubernetesRelations: SeedRelation[] = [
     description: 'controller-manager 只通过 API Server 读写集群状态，不直接访问 etcd。',
   },
   { id: 'rel-k8s-kubelet-cri', source: 'k8s-kubelet', target: 'k8s-cri', relationType: 'depends_on', description: 'kubelet 通过 CRI 调用容器运行时。' },
-  { id: 'rel-k8s-cri-containerd', source: 'k8s-cri', target: 'k8s-containerd', relationType: 'implements' },
+  {
+    id: 'rel-k8s-cri-containerd',
+    source: 'k8s-containerd',
+    target: 'k8s-cri',
+    relationType: 'implements',
+    description: 'containerd 通过内置 CRI Plugin 实现 CRI 接口；kubelet 通过 CRI 调用容器运行时。',
+  },
   { id: 'rel-k8s-containerd-oci', source: 'k8s-containerd', target: 'k8s-oci', relationType: 'implements', description: 'containerd 拉取并运行 OCI 镜像。' },
   { id: 'rel-k8s-deploy-rs', source: 'k8s-deployment', target: 'k8s-replicaset', relationType: 'contains', description: 'Deployment 通过 ReplicaSet 管理 Pod。' },
   { id: 'rel-k8s-rs-pod', source: 'k8s-replicaset', target: 'k8s-pod', relationType: 'contains' },
@@ -1482,6 +1488,9 @@ const P54_RELATION_CORRECTIONS: Array<{
   target: string;
   fromType: string;
   toType: string;
+  /** Present when the correction also fixes the relation direction. */
+  toSource?: string;
+  toTarget?: string;
   description: string;
 }> = [
   {
@@ -1491,6 +1500,16 @@ const P54_RELATION_CORRECTIONS: Array<{
     fromType: 'depends_on',
     toType: 'related',
     description: 'kube-proxy 是 Service 的一种数据面实现，eBPF CNI 等实现可以替代它。',
+  },
+  {
+    id: 'rel-k8s-cri-containerd',
+    source: 'k8s-cri',
+    target: 'k8s-containerd',
+    fromType: 'implements',
+    toType: 'implements',
+    toSource: 'k8s-containerd',
+    toTarget: 'k8s-cri',
+    description: 'containerd 通过内置 CRI Plugin 实现 CRI 接口；kubelet 通过 CRI 调用容器运行时。',
   },
 ];
 
@@ -1522,7 +1541,9 @@ export function migrateP54Relations(): number {
     changed += db
       .prepare(
         `UPDATE tech_relations
-         SET relation_type = ?,
+         SET source_node_id = ?,
+             target_node_id = ?,
+             relation_type = ?,
              description = CASE
                WHEN description IS NULL OR TRIM(description) = '' THEN ?
                ELSE description
@@ -1530,7 +1551,14 @@ export function migrateP54Relations(): number {
              updated_at = ?
          WHERE id = ?`,
       )
-      .run(correction.toType, correction.description, timestamp, correction.id).changes;
+      .run(
+        correction.toSource ?? correction.source,
+        correction.toTarget ?? correction.target,
+        correction.toType,
+        correction.description,
+        timestamp,
+        correction.id,
+      ).changes;
   }
   return changed;
 }

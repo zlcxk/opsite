@@ -84,6 +84,23 @@ function hasReferenceLinks(value: string | null): boolean {
   }
 }
 
+function parseReferenceLinks(value: string | null): TechExternalLink[] {
+  if (isEmpty(value)) return [];
+  try {
+    const parsed = JSON.parse(value!);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (link): link is TechExternalLink =>
+        Boolean(link) &&
+        typeof link === 'object' &&
+        typeof (link as TechExternalLink).label === 'string' &&
+        typeof (link as TechExternalLink).url === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
 function hashMarkdown(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -176,8 +193,24 @@ function applyEntry(entry: TechContentEntry, timestamp: string, force: boolean):
   if (entry.repoUrl && isEmpty(row.repo_url)) {
     updates.push({ column: 'repo_url', value: entry.repoUrl });
   }
-  if (entry.referenceLinks?.length && !hasReferenceLinks(row.reference_links)) {
-    updates.push({ column: 'reference_links', value: JSON.stringify(entry.referenceLinks) });
+  if (entry.referenceLinks?.length) {
+    if (!hasReferenceLinks(row.reference_links)) {
+      updates.push({ column: 'reference_links', value: JSON.stringify(entry.referenceLinks) });
+    } else if (canReplace) {
+      // A hash-gated revision may append newly verified official sources, but
+      // it never removes or rewrites links the user already has.
+      const current = parseReferenceLinks(row.reference_links);
+      if (current.length) {
+        const known = new Set(current.map((link) => link.url));
+        const additions = entry.referenceLinks.filter((link) => !known.has(link.url));
+        if (additions.length) {
+          updates.push({
+            column: 'reference_links',
+            value: JSON.stringify([...current, ...additions]),
+          });
+        }
+      }
+    }
   }
 
   if (updates.length) {

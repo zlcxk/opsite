@@ -165,6 +165,17 @@ describe('technology map seed', () => {
     ).toBe(true);
   });
 
+  it('uses the containerd -> CRI direction for the implementation relation', () => {
+    const k8s = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const relation = tech
+      .listRelations({ domainId: k8s.id })
+      .find((entry) => entry.id === 'rel-k8s-cri-containerd');
+    expect(relation?.source.id).toBe('k8s-containerd');
+    expect(relation?.target.id).toBe('k8s-cri');
+    expect(relation?.relationType).toBe('implements');
+    expect(relation?.description).toContain('CRI Plugin');
+  });
+
   it('migrates only the exact seeded relation and preserves user changes', () => {
     const before = tech.listRelations({ domainId: 'tech-domain-kubernetes' }).length;
     dbModule.db
@@ -199,6 +210,63 @@ describe('technology map seed', () => {
         `UPDATE tech_relations SET relation_type = 'related',
            description = 'kube-proxy 是 Service 的一种数据面实现，eBPF CNI 等实现可以替代它。'
          WHERE id = 'rel-k8s-service-proxy'`,
+      )
+      .run();
+
+    // P5.4.1: the old seed had CRI -> containerd, which reverses who
+    // implements the interface. Only that exact tuple is migrated.
+    dbModule.db
+      .prepare(
+        `UPDATE tech_relations SET source_node_id = 'k8s-cri',
+           target_node_id = 'k8s-containerd', relation_type = 'implements', description = NULL
+         WHERE id = 'rel-k8s-cri-containerd'`,
+      )
+      .run();
+    expect(seed.migrateP54Relations()).toBe(1);
+    const flipped = dbModule.db
+      .prepare(
+        'SELECT source_node_id, target_node_id, relation_type, description FROM tech_relations WHERE id = ?',
+      )
+      .get('rel-k8s-cri-containerd') as {
+      source_node_id: string;
+      target_node_id: string;
+      relation_type: string;
+      description: string;
+    };
+    expect(flipped.source_node_id).toBe('k8s-containerd');
+    expect(flipped.target_node_id).toBe('k8s-cri');
+    expect(flipped.relation_type).toBe('implements');
+    expect(flipped.description).toContain('CRI Plugin');
+    expect(seed.migrateP54Relations()).toBe(0);
+
+    dbModule.db
+      .prepare(
+        `UPDATE tech_relations SET source_node_id = 'k8s-cri',
+           target_node_id = 'k8s-containerd', relation_type = 'related',
+           description = '用户自己改的方向和类型'
+         WHERE id = 'rel-k8s-cri-containerd'`,
+      )
+      .run();
+    expect(seed.migrateP54Relations()).toBe(0);
+    const preservedDirection = dbModule.db
+      .prepare('SELECT source_node_id, target_node_id, relation_type, description FROM tech_relations WHERE id = ?')
+      .get('rel-k8s-cri-containerd') as {
+      source_node_id: string;
+      target_node_id: string;
+      relation_type: string;
+      description: string;
+    };
+    expect(preservedDirection.source_node_id).toBe('k8s-cri');
+    expect(preservedDirection.target_node_id).toBe('k8s-containerd');
+    expect(preservedDirection.relation_type).toBe('related');
+    expect(preservedDirection.description).toBe('用户自己改的方向和类型');
+
+    dbModule.db
+      .prepare(
+        `UPDATE tech_relations SET source_node_id = 'k8s-containerd',
+           target_node_id = 'k8s-cri', relation_type = 'implements',
+           description = 'containerd 通过内置 CRI Plugin 实现 CRI 接口；kubelet 通过 CRI 调用容器运行时。'
+         WHERE id = 'rel-k8s-cri-containerd'`,
       )
       .run();
   });
@@ -318,8 +386,18 @@ describe('technology knowledge content', () => {
     expect(emptyCards.count).toBe(0);
 
     expect(content.contentEntryForNode('k8s-apiserver')?.contentMarkdown).toContain('准入');
+    expect(content.contentEntryForNode('k8s-cri')?.contentMarkdown).toContain('RuntimeService');
+    expect(content.contentEntryForNode('k8s-containerd')?.contentMarkdown).toContain(
+      'io.containerd.cri.v1.runtime',
+    );
     expect(content.contentEntryForNode('prom-tsdb')?.contentMarkdown).toContain('WAL');
     expect(content.TECH_CONTENT_ENTRIES).toHaveLength(180);
+
+    // Phase B upgrades are actually written into the seeded node rows.
+    expect(tech.getNode('k8s-apiserver')!.contentMarkdown).toContain('API Priority and Fairness');
+    expect(tech.getNode('k8s-kubelet')!.contentMarkdown).toContain('Kubernetes 1.34 默认值');
+    expect(tech.getNode('k8s-cri')!.contentMarkdown).toContain('RuntimeService');
+    expect(tech.getNode('k8s-containerd')!.contentMarkdown).toContain('io.containerd.cri.v1.runtime');
 
     const docs = dbModule.db
       .prepare(
@@ -399,6 +477,49 @@ describe('technology knowledge content', () => {
     expect(tech.getNode(triaged.id)!.contentStatus).toBe('needs_review');
 
     for (const node of [untouched, edited, verified, triaged]) tech.deleteNode(node.id);
+  });
+
+  it('appends verified reference links on a hash-gated revision without removing existing ones', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const hash = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
+    const oldBody = '# 旧版\n\n旧正文。';
+    const newBody = '# 新版\n\n补充了官方来源。';
+    const node = tech.createNode(domain.id, { name: '参考链接合并测试节点', nodeType: 'concept' });
+    tech.updateNode(node.id, {
+      contentMarkdown: oldBody,
+      referenceLinks: [{ label: '既有来源', url: 'https://example.com/existing' }],
+    });
+
+    expect(
+      content.applyTechContentEntry({
+        nodeId: node.id,
+        version: 2,
+        contentMarkdown: newBody,
+        replacesContentHash: hash(oldBody),
+        referenceLinks: [
+          { label: '既有来源', url: 'https://example.com/existing' },
+          { label: '新增来源', url: 'https://example.com/new' },
+        ],
+      }),
+    ).toBe(true);
+    expect(tech.getNode(node.id)!.referenceLinks).toEqual([
+      { label: '既有来源', url: 'https://example.com/existing' },
+      { label: '新增来源', url: 'https://example.com/new' },
+    ]);
+
+    tech.updateNode(node.id, { contentMarkdown: '# 用户改写\n\n不要动链接。' });
+    expect(
+      content.applyTechContentEntry({
+        nodeId: node.id,
+        version: 3,
+        contentMarkdown: '# 又一个版本',
+        replacesContentHash: hash(oldBody),
+        referenceLinks: [{ label: '不应写入', url: 'https://example.com/blocked' }],
+      }),
+    ).toBe(false);
+    expect(tech.getNode(node.id)!.referenceLinks).toHaveLength(2);
+
+    tech.deleteNode(node.id);
   });
 
   it('never overwrites user content when the content seed runs again', () => {

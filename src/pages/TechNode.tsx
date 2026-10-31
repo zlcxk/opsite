@@ -45,7 +45,11 @@ import {
 } from '../lib/tech';
 import { ActionMenu, EmptyState, Modal, PageHeader } from '../components/ui';
 import { TechNodeFormDialog } from '../components/TechNodeFormDialog';
-import { TechDocEditor, type TechDocEditorHandle } from '../components/TechDocEditor';
+import {
+  TechDocEditor,
+  type TechDocEditorBusy,
+  type TechDocEditorHandle,
+} from '../components/TechDocEditor';
 import { MarkdownPreview } from '../components/markdown/MarkdownPreview';
 
 function UnderstandBlock({ label, value }: { label: string; value: string | null }) {
@@ -88,6 +92,10 @@ export function TechNode() {
   const [radarPick, setRadarPick] = useState('');
   const [docOpen, setDocOpen] = useState(false);
   const [docDirty, setDocDirty] = useState(false);
+  const [docBusy, setDocBusy] = useState<TechDocEditorBusy>({
+    saving: false,
+    verifying: false,
+  });
   const docEditorRef = useRef<TechDocEditorHandle | null>(null);
 
   useEffect(() => {
@@ -124,6 +132,9 @@ export function TechNode() {
 
   const closeDocEditor = async () => {
     const editor = docEditorRef.current;
+    // Verify is a two-step write (save then attest). Closing in the middle
+    // would hide the outcome and could race the verification request.
+    if (editor?.isVerifying()) return;
     if (editor?.isDirty()) {
       const saved = await editor.save();
       if (!saved) return;
@@ -131,9 +142,15 @@ export function TechNode() {
     setDocOpen(false);
   };
 
-  const discardDocEditor = () => {
+  const discardDocEditor = async () => {
+    const editor = docEditorRef.current;
+    if (!editor || editor.isBusy()) return;
     if (!window.confirm('放弃尚未保存的文档更改并关闭？')) return;
-    setDocOpen(false);
+    // Wait for any already-issued save, cancel the pending debounce and reset
+    // the editor to the last server-confirmed snapshot before closing. If that
+    // save fails, the editor keeps the unsaved edits and the dialog stays open.
+    const discarded = await editor.discard();
+    if (discarded) setDocOpen(false);
   };
 
   const applySavedDoc = (saved: TechNodeDetail['node']) => {
@@ -896,12 +913,27 @@ export function TechNode() {
             </span>
             <div className="flex items-center gap-2">
               {docDirty && (
-                <button className="btn btn-ghost" onClick={discardDocEditor}>
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => void discardDocEditor()}
+                  disabled={docBusy.saving || docBusy.verifying}
+                  title={
+                    docBusy.verifying
+                      ? '验证进行中，暂时不能放弃更改'
+                      : docBusy.saving
+                        ? '保存进行中，完成后再放弃更改'
+                        : undefined
+                  }
+                >
                   放弃更改
                 </button>
               )}
-              <button className="btn btn-secondary" onClick={() => void closeDocEditor()}>
-                {docDirty ? '保存并关闭' : '关闭'}
+              <button
+                className="btn btn-secondary"
+                onClick={() => void closeDocEditor()}
+                disabled={docBusy.verifying}
+              >
+                {docBusy.verifying ? '验证中…' : docDirty ? '保存并关闭' : '关闭'}
               </button>
             </div>
           </div>
@@ -912,6 +944,7 @@ export function TechNode() {
           node={node}
           onSaved={applySavedDoc}
           onDirtyChange={setDocDirty}
+          onBusyChange={setDocBusy}
           minHeight={460}
         />
       </Modal>

@@ -78,96 +78,166 @@ Kubernetes 不是 PaaS，也不负责构建镜像或运行业务代码。它只�
   ),
   d(
     'k8s-apiserver',
-    `## 组件定位
+    `## 技术定位
 
-kube-apiserver 是集群唯一的 REST API 入口和安全边界。kubectl、控制器、kubelet 以及外部系统都通过它读写对象，其他控制平面组件不会直接访问 etcd。
+kube-apiserver 是 Kubernetes 控制面中唯一对外提供 REST API 的组件，也是所有持久化读写经过的安全边界。kubectl、kube-scheduler、kube-controller-manager、kubelet、kube-proxy 以及外部控制器都通过它读取和写入对象；只有 kube-apiserver 配置了 etcd 端点并直接与 etcd 通信，其他组件即使需要集群状态，也只能通过 API 获取。这个单向关系是理解控制面故障传播的起点：apiserver 不可用时，已有 Pod 可能继续运行，但调度、控制器调和、状态上报和新变更都会停滞。
 
-## 核心职责
+apiserver 本身不保存权威状态。它把对象编码后写入 etcd，在内存中维护 watch cache 和 discovery 信息，并把多个副本部署在负载均衡之后。副本之间不选主，每个副本都可以处理读写；它们共享同一组 etcd，但各自的缓存独立。因此“apiserver 高可用”不等于“etcd 高可用”，两者要分别设计。
 
-- 暴露 Kubernetes API（内置资源、聚合 API 和 CRD）。
-- 对请求执行认证、授权和准入控制。
-- 把对象持久化到 etcd，并通过 watch 向观察者推送变更。
-- 提供限流、审计和乐观并发控制。
+## 设计原理
 
-## 工作原理
+apiserver 把“状态存储”和“状态访问”分开：etcd 只负责持久化字节，apiserver 负责对象语义、版本转换、默认值、准入、并发控制和 watch。这样所有客户端共享同一套校验规则，控制器不需要理解存储格式，也不需要各自实现缓存失效。
 
-一个写请求通常经过：
+副本无状态（watch cache 是可重建的本地缓存）使水平扩展变得简单；但“无状态”不等于“无一致性约束”。读的一致性由 resourceVersion 语义表达，写的一致性由 etcd 的 Raft 和 resourceVersion 前置条件保证。准入 webhook 与聚合 API 把扩展点放进请求路径，代价是外部依赖的延迟和可用性会直接影响 API。
 
-1. **认证**：确认请求者身份（证书、Bearer Token、OIDC 等）。
-2. **授权**：RBAC 或 webhook 判断是否允许该操作。
-3. **变更准入**：Mutating Webhook 修改对象，补默认值或注入边车。
-4. **校验准入**：Validating Webhook 或 CEL 策略拒绝不合规对象。
-5. **持久化**：写入 etcd，返回 resourceVersion。
-6. **通知**：watch 事件推送给控制器和 kubelet。
+## 工作机制
 
-读请求可以走 watch cache，但一致性读仍会落到 etcd。
+### 请求处理链路
 
-## 关键配置
+一个写请求通常依次经过：
 
-- **--max-requests-inflight / --max-mutating-requests-inflight**：控制并发，防止过载。
-- **--enable-admission-plugins**：启用内置准入插件。
-- **--audit-policy-file**：定义审计级别和保留内容。
-- **--etcd-servers**：etcd 端点。
-- **--authorization-mode**：通常为 Node,RBAC。
+1. **TLS 与认证**：确认请求者身份。常见方式包括客户端证书、ServiceAccount Token、OIDC 和认证 webhook；匿名访问可以关闭。认证失败返回 401。
+2. **授权**：按 Node、RBAC、Webhook 等授权器判断该身份是否允许对目标资源执行该 verb。授权失败返回 403，和“未认证”是不同问题。
+3. **解码、转换与默认值**：把请求体从 JSON 或 protobuf 解码为内部类型，完成版本转换和字段默认值填充。
+4. **变更准入**：运行 MutatingAdmissionWebhook、MutatingAdmissionPolicy 以及内置的变更型插件，可能补默认值、注入边车或修改标签。
+5. **校验**：执行 OpenAPI schema、字段校验和对象级校验，然后运行 ValidatingAdmissionWebhook、ValidatingAdmissionPolicy 及内置校验插件。任一步拒绝，整个请求立即失败。
+6. **持久化**：在 etcd 事务中写入对象；更新和删除会以 resourceVersion 做前置条件。成功后 etcd 返回新的 revision，apiserver 把它映射为对象的 resourceVersion。
+7. **响应与通知**：返回响应，同时更新本副本的 watch cache，并向 watch 客户端分发事件。
 
-## 典型使用场景
+读请求（get/list/watch）不经过准入控制。它们可以命中 watch cache，也可能需要 etcd 参与，具体取决于请求的一致性语义。
 
-- 排查 401/403：先确认身份，再检查 RBAC 和准入。
-- 排查 429：观察 apiserver 请求量、限流和客户端 list 行为。
-- 排查写入变慢：同时看 apiserver 延迟、webhook 耗时和 etcd fsync。
+### 读路径与一致性
 
-## 常见故障与排查
+resourceVersion 是理解读行为的关键：
+
+- **不设置 resourceVersion**：请求“最新”数据。语义上要求一致读；在 Kubernetes 1.34 中，当 etcd 为 3.4.31+ 或 3.5.13+ 时，apiserver 可以通过 watch cache 加 progress notification 提供该语义，而不必每次直读 etcd。1.31 起该能力默认启用。
+- **resourceVersion=0**：表示“任意版本”，总是由 watch cache 返回，可能比客户端已见过的版本更旧；适合先 list 再 watch 的场景，不适合强一致读取。
+- **指定具体 resourceVersion**：要求精确版本；若该版本已被压缩，返回 410 Gone，客户端必须重新 list。
+- **resourceVersionMatch=NotOlderThan**：list 时常用的折中，保证结果不旧于给定版本，同时允许使用缓存。
+
+watch 从某个 resourceVersion 开始持续推送 ADDED/MODIFIED/DELETED 事件，并可用 bookmark 事件推进客户端记录的版本。历史 revision 被压缩后，旧 watch 会收到 410，客户端应重新建立 list/watch，而不是无限重连同一个版本。
+
+### 写入、并发与扩展
+
+更新和删除可以携带 resourceVersion。若对象在读取后被其他客户端修改，apiserver 会发现版本不匹配并返回 409 Conflict，这就是乐观并发控制；重试前应重新读取对象。PATCH 支持 JSON Patch、Merge Patch、内置资源的 Strategic Merge Patch 以及 Server-Side Apply。Server-Side Apply 以字段所有权解决多管理者冲突，冲突时同样返回 409，需要显式 force 或调整字段归属。
+
+CRD 由 apiserver 直接提供发现、校验和持久化，数据仍写入同一 etcd。聚合 API 则把请求转发给独立的扩展 apiserver；扩展服务的存储由它自己决定，不保证与核心 etcd 相同。Admission webhook 也是 apiserver 的外部依赖，超时或不可达会直接增加写延迟，\`failurePolicy: Fail\` 时还会阻断写入。
+
+## 关键配置与实践
+
+### 请求治理与高可用
+
+apiserver 用 API Priority and Fairness（APF）隔离不同客户端。APF 自 1.29 起为 Stable，默认启用；FlowSchema 按请求属性分类，PriorityLevelConfiguration 为每个优先级维护独立并发上限和队列。启用 APF 时，\`--max-requests-inflight\`（默认 400）与 \`--max-mutating-requests-inflight\`（默认 200）相加构成总并发预算，再分配给各优先级；不再简单地把所有请求放进一个池子。被限流的请求返回 429，并带 Retry-After，客户端应退避重试。
+
+其他关键配置包括 \`--etcd-servers\`、\`--etcd-prefix\`（默认 \`/registry\`）、\`--authorization-mode\`、\`--enable-admission-plugins\`、\`--audit-policy-file\`、\`--encryption-provider-config\` 和 \`--watch-cache\`。审计策略决定记录哪些请求和响应体；静态加密让 etcd 中保存的是密文，但密钥管理仍在集群外。
+
+生产环境通常部署 3 个或更多 apiserver 副本，放在负载均衡之后，共享同一组 etcd。副本无 leader，扩容可以提升读与请求处理能力，但不能替代 etcd 的法定人数。apiserver 的 watch cache 是每副本本地的，滚动重启会让缓存重新建立，期间 etcd 读压力会上升。
+
+## 常见问题与限制
 
 | 现象 | 常见原因 | 排查方向 |
 |---|---|---|
-| 所有写入超时 | admission webhook 不可用 | 检查 webhook 的 failurePolicy、Service 和超时 |
-| 大量 429 | 客户端高频 list/watch 或控制器失控 | 看 apiserver 指标和客户端 QPS |
-| 控制面延迟升高 | etcd 磁盘慢、leader 抖动 | 看 etcd WAL fsync、leader change |
-| 证书错误 | 证书过期或 SAN 不匹配 | 检查 apiserver 证书和 kubeconfig |
+| 401 Unauthorized | 证书、Token 过期或认证配置错误 | 检查 kubeconfig、证书 SAN、ServiceAccount Token |
+| 403 Forbidden | RBAC 未授权或 Node 授权器拒绝 | \`kubectl auth can-i\`、RoleBinding、Node 身份 |
+| 429 Too Many Requests | APF 限流或客户端高频 list/watch | 看 FlowSchema、PriorityLevel 指标和客户端 QPS |
+| 写入超时或 500 | admission webhook 不可达、etcd 慢或法定人数丢失 | webhook 超时、etcd fsync、leader 变化 |
+| 409 Conflict | resourceVersion 冲突或 SSA 字段所有权冲突 | 重新读取对象，检查 field manager |
+| watch 频繁 410 | 客户端版本过旧或 etcd 压缩过快 | 重新 list/watch，检查压缩间隔和客户端处理 |
+| 所有副本不健康 | etcd 不可用、证书过期、磁盘满 | 先查 etcd 健康，再查 apiserver 日志与证书 |
 
-## 相关组件
+## 技术关联
 
-etcd 决定持久化延迟；kube-scheduler 和 controller-manager 通过 watch 消费变更；kubelet 通过 apiserver 上报节点和 Pod 状态。任何 webhook 故障都会放大为整个集群的写入故障。
+kube-scheduler 通过 apiserver 读取未绑定 Pod、写入 Binding；kube-controller-manager 通过 apiserver watch 对象并写回状态；kubelet 通过 apiserver 获取绑定到本节点的 Pod、上报 Node 与 Pod 状态，并通过 Lease 维持心跳；kube-proxy 通过 apiserver watch Service 和 EndpointSlice。它们都不直接访问 etcd。etcd 只与 apiserver 建立连接，因此 etcd 故障首先表现为 API 写入失败和 watch 中断，而不是某个节点立即停止运行。
 
 ## 参考资料
 
-- [kube-apiserver](https://kubernetes.io/docs/concepts/overview/components/#kube-apiserver)
-- [Admission Control](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/)`,
-    { docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kube-apiserver' },
+- [Kubernetes Components](https://kubernetes.io/docs/concepts/overview/components/#kube-apiserver)
+- [Kubernetes API Concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)
+- [API Priority and Fairness](https://kubernetes.io/docs/concepts/cluster-administration/flow-control/)
+- [Admission Control](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/)
+- [kube-apiserver reference](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/)
+- [API Server Bypass Risks](https://kubernetes.io/docs/concepts/security/api-server-bypass-risks/)`,
+    {
+      versions: 'Kubernetes 1.28+；APF 1.29 Stable；watch cache 提供 Most recent 读自 1.31 起默认',
+      docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kube-apiserver',
+      version: 2,
+      replacesContentHash: '81c6092c321002cfe808bdd6eff1d7c44a99a276e312d64bf82d96d1939c775b',
+      referenceLinks: [
+        {
+          label: 'Kubernetes API Concepts',
+          url: 'https://kubernetes.io/docs/reference/using-api/api-concepts/',
+        },
+        {
+          label: 'API Priority and Fairness',
+          url: 'https://kubernetes.io/docs/concepts/cluster-administration/flow-control/',
+        },
+        {
+          label: 'Admission Control',
+          url: 'https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/',
+        },
+        {
+          label: 'kube-apiserver reference',
+          url: 'https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/',
+        },
+        {
+          label: 'API Server Bypass Risks',
+          url: 'https://kubernetes.io/docs/concepts/security/api-server-bypass-risks/',
+        },
+      ],
+    },
   ),
   d(
     'k8s-etcd',
-    `## 组件定位
+    `## 技术定位
 
-etcd 是 Kubernetes 的唯一数据源，保存所有对象、配置和状态。它使用 Raft 在多个成员之间复制数据，是集群备份和恢复的核心。
+etcd 是 Kubernetes 的持久化后端，保存所有 API 对象的权威副本。它本身是一个通用的强一致键值存储，并不理解 Pod、Deployment 或 Service；对象由 kube-apiserver 编码后写入，读取时再由 apiserver 解码、转换并发给客户端。只有 kube-apiserver 直接连接 etcd，scheduler、controller-manager、kubelet 和 kube-proxy 都只通过 API 读写状态。
 
-## 核心职责
+这个边界很重要：直接修改 etcd 中的 \`/registry\` 数据会绕过认证、授权、准入、默认值、resourceVersion 和 watch 通知，可能让对象处于 apiserver 无法解释的状态。etcd 是“后端存储”，不是给运维人员使用的 Kubernetes 管理接口。
 
-- 提供强一致的键值存储。
-- 通过 Raft 多数派提交写请求。
-- 通过 watch 向 apiserver 推送变更。
-- 通过快照、压缩和碎片整理控制数据规模。
+### 版本与兼容性
 
-## 核心原理
+etcd 版本必须跟随所用 Kubernetes 版本，而不是直接采用 etcd 最新版。以 kubeadm 的版本映射为例：kubeadm 1.34 默认安装 etcd 3.6.5，支持的外部 etcd 最低版本为 3.5.24；kubeadm 1.31–1.33 默认仍为 3.5.24。Kubernetes 运维文档中“生产环境最低建议 3.4.29+/3.5.11+”是通用下限，不等同于某个 Kubernetes 版本受支持的组合。
 
-写请求必须到达 leader 并复制到多数派才能确认。因此 etcd 的磁盘 fsync 延迟会直接转化为 apiserver 写延迟。成员数为 3 时最多容忍 1 个成员故障；成员数为偶数不会增加容错能力。
+升级前应查阅对应 Kubernetes 版本的 kubeadm 常量、发布说明和 etcd 升级文档，确认目标版本、数据目录格式和回滚路径。跨多个 minor 直接升级、混用不同 etcd 版本、或在未备份时替换成员，都会放大恢复难度。
 
-## 关键机制
+## 设计原理
 
-- **WAL**：预写日志，保证崩溃恢复。
-- **Snapshot**：定期快照，避免无限回放 WAL。
-- **Revision / MVCC**：每次写入产生新 revision，watch 从指定 revision 开始。
-- **Compaction**：清理旧 revision，防止数据库无限增长。
-- **Defrag**：回收碎片空间，需要在成员上逐个执行。
+etcd 把共识、持久化和版本历史集中到一个后端：Raft 决定哪些写已提交，WAL 保证崩溃后可恢复，MVCC 保留 revision 供 watch 追赶。Kubernetes 只消费这些原语，不要求 etcd 理解对象语义。这种分层让 apiserver 可以独立演进 API 版本，而 etcd 保持通用；代价是 etcd 的磁盘延迟、容量和法定人数会直接成为 API 的写入瓶颈。
 
-## 运维要点
+Kubernetes 默认把对象放在 \`/registry/<资源>/<命名空间>/<名称>\` 下，集群级资源省略命名空间；前缀可以通过 apiserver 的 \`--etcd-prefix\` 修改。对象默认以 protobuf 编码写入，而不是直接保存 YAML。
 
-- 使用低延迟本地 SSD，避免网络存储带来的 fsync 抖动。
-- 控制面节点数通常为 3 或 5，跨故障域部署。
-- 定期执行快照备份，并实际演练恢复。
-- 监控 \`etcd_server_leader_changes_seen_total\`、\`etcd_disk_wal_fsync_duration_seconds\`、数据库大小和告警。
+etcd 使用多版本并发控制（MVCC）：每次写操作产生一个全局递增的 revision，旧版本在压缩前仍然可读。watch 可以从指定 revision 开始推送变更，因此 apiserver 能先 list 再 watch，并在断线后从上次版本继续。压缩会删除旧 revision，客户端若请求已被压缩的版本，会收到 410 Gone，必须重新 list。
 
-## 备份与恢复
+写请求由 Raft leader 接收，复制到多数派并持久化后才确认。3 个成员可以容忍 1 个成员故障，5 个成员可以容忍 2 个；偶数成员不会提高容错能力，2 个成员反而无法容忍任何 1 个故障。默认读是线性一致的，要求读到最新已提交状态；这会受 leader 和网络影响，不是免费的本地读。
+
+## 工作机制
+
+- **Raft**：负责 leader 选举、日志复制和成员变更；失去多数派后集群无法提交新写入。
+- **WAL**：预写日志，写请求在落盘后才算提交；磁盘 fsync 延迟直接转化为 apiserver 写延迟。
+- **Backend 与快照**：bbolt 保存键值数据，etcd 按 \`--snapshot-count\`（自 v3.2 起默认 100000）触发快照并截断旧 Raft 日志。
+- **Compaction**：清理旧 revision。kube-apiserver 默认每 5 分钟发起一次压缩，可通过 \`--etcd-compaction-interval\` 调整；压缩不等于回收磁盘空间。
+- **Defrag**：重写 backend 文件以回收碎片空间，需要逐成员执行；执行期间该成员的服务会受影响。
+- **空间配额**：etcd 达到配额后触发 NOSPACE 告警并拒绝写入，只允许读和删除；需要先压缩、再碎片整理，并清除告警后才能恢复写入。
+- **Watch**：apiserver 通过 watch 获取变更；etcd 不保存“当前对象”的语义，只保存键值历史。
+
+## 关键配置与实践
+
+etcd 对磁盘延迟和 fsync 稳定性非常敏感。优先使用本地 SSD，避免网络存储和高争用磁盘；控制面节点通常为 3 或 5 个，跨故障域部署，并保证成员之间的网络延迟稳定。CPU 饱和、内存压力和磁盘抖动都可能导致心跳超时、leader 切换，进而表现为 apiserver 写入变慢或超时。
+
+需要持续观察的指标包括：
+
+- \`etcd_server_has_leader\` 与 \`etcd_server_leader_changes_seen_total\`：是否稳定有 leader。
+- \`etcd_disk_wal_fsync_duration_seconds\`：WAL 落盘延迟。
+- \`etcd_disk_backend_commit_duration_seconds\`：backend 提交延迟。
+- \`etcd_mvcc_db_total_size_in_bytes\` 与配额使用率：是否接近 NOSPACE。
+- \`etcd_network_peer_round_trip_time_seconds\`：成员间网络。
+- \`etcd_server_slow_apply_total\`、\`etcd_server_slow_read_indexes_total\`：慢 Apply 与慢读。
+
+定期压缩和碎片整理只能控制空间，不能替代容量规划。大量 Event、频繁更新的大对象和失控控制器都会放大写入量；Event 默认保留 1 小时，可以通过 apiserver 的 \`--event-ttl\` 调整，但缩短保留时间只是缓解手段。
+
+### 备份与恢复
+
+快照备份应包含所有成员的一致状态，并实际演练恢复。常用命令：
 
 ~~~bash
 ETCDCTL_API=3 etcdctl snapshot save /backup/etcd-$(date +%F).db \\
@@ -175,24 +245,70 @@ ETCDCTL_API=3 etcdctl snapshot save /backup/etcd-$(date +%F).db \\
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \\
   --cert=/etc/kubernetes/pki/etcd/server.crt \\
   --key=/etc/kubernetes/pki/etcd/server.key
+
+etcdutl snapshot status /backup/etcd-$(date +%F).db --write-out=table
 ~~~
 
-恢复前必须停止 apiserver 和 etcd，恢复后检查成员健康和数据完整性。不要把“备份文件存在”当成“可以恢复”。
+自 etcd 3.5 起，\`etcdctl snapshot status\` 和 \`etcdctl snapshot restore\` 已弃用；etcd 3.6 文档只提供 \`etcdutl\` 方式，校验和恢复应直接使用 \`etcdutl\`。恢复时先停止 apiserver 和 etcd，把快照恢复到新的数据目录，再按原集群配置启动所有成员：
 
-## 常见故障
+~~~bash
+etcdutl snapshot restore /backup/etcd.db \\
+  --name etcd-1 \\
+  --initial-cluster etcd-1=https://10.0.0.11:2380,etcd-2=https://10.0.0.12:2380,etcd-3=https://10.0.0.13:2380 \\
+  --initial-cluster-token etcd-cluster-1 \\
+  --initial-advertise-peer-urls https://10.0.0.11:2380 \\
+  --data-dir /var/lib/etcd-restored
+~~~
+
+恢复后要检查成员健康、leader、数据 revision 和关键对象。不要把“快照文件存在”当成“可以恢复”；RPO 取决于最近一次成功备份，RTO 取决于恢复演练和证书、DNS、负载均衡等外围配置。
+
+### 升级与成员变更
+
+升级应逐成员进行：先升级一个 follower，确认健康并追上 leader，再处理下一个，最后升级 leader；同时遵循 etcd 版本自身的升级路径，不要跨多个 minor 跳跃。成员替换时先加入新成员并等待数据同步完成，再移除旧成员；peer 证书的 SAN 必须覆盖新成员的地址。
+
+在多数派丢失时，不要随意使用强制新建集群的方式“修复”，这会产生分叉数据。优先从经过验证的快照恢复，并确认所有成员使用相同的集群配置和 token。
+
+## 常见问题与限制
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | leader 频繁切换 | 磁盘慢、网络抖动、CPU 饱和 | 查 fsync、网络和成员日志 |
-| 数据库持续增长 | 未压缩或写入量过大 | 配置 compaction，检查事件和对象规模 |
+| 数据库持续增长 | 未压缩、Event 或对象写入量过大 | 检查压缩间隔、Event 保留和对象规模 |
+| NOSPACE 告警 | 达到空间配额 | 压缩、逐成员 defrag、清除告警 |
+| 写入全部失败 | 失去多数派、成员证书过期 | 恢复成员或从快照重建，检查 peer 证书 |
 | 恢复后数据不对 | 快照过旧或恢复步骤错误 | 校准 RPO，定期演练 |
-| 成员无法加入 | peer 证书或初始集群配置错误 | 检查 peer URLs 和证书 SAN |
+| 成员无法加入 | peer 证书或初始集群配置错误 | 检查 peer URLs、SAN 和初始集群参数 |
+
+## 技术关联
+
+etcd 故障会首先表现为 apiserver 写入失败、watch 中断和控制器停止推进；已经运行的 Pod 不会因为 etcd 短暂不可用而立即停止，kubelet 会继续按最后一次拿到的 PodSpec 运行容器并重试上报。不要把 etcd 当成应用数据库，也不要在应用侧直接连接 etcd 保存业务数据；Kubernetes 的 API 语义、准入和 watch 都在 apiserver 层。
 
 ## 参考资料
 
-- [etcd 官方文档](https://etcd.io/docs/)
-- [Operating etcd for Kubernetes](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)`,
-    { docsUrl: 'https://etcd.io/docs/' },
+- [etcd 官方文档](https://etcd.io/docs/v3.6/)
+- [etcd Maintenance](https://etcd.io/docs/v3.6/op-guide/maintenance/)
+- [etcd Recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)
+- [Operating etcd clusters for Kubernetes](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)`,
+    {
+      versions: 'Kubernetes 1.34；kubeadm 默认 etcd 3.6.5，外部 etcd 最低 3.5.24（1.31–1.33 为 3.5.24）',
+      docsUrl: 'https://etcd.io/docs/v3.6/',
+      version: 2,
+      replacesContentHash: '933548092960c40af1fa0ec0f20da6130cb803d917fe12e5f1fc6e91ecf430bf',
+      referenceLinks: [
+        {
+          label: 'etcd Maintenance',
+          url: 'https://etcd.io/docs/v3.6/op-guide/maintenance/',
+        },
+        {
+          label: 'etcd Recovery',
+          url: 'https://etcd.io/docs/v3.6/op-guide/recovery/',
+        },
+        {
+          label: 'Operating etcd clusters for Kubernetes',
+          url: 'https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/',
+        },
+      ],
+    },
   ),
   d(
     'k8s-scheduler',
@@ -213,6 +329,16 @@ kube-scheduler 是 Kubernetes 控制面中的放置决策组件。它监听尚�
 - **unschedulableQ**：因硬约束暂时无法调度的 Pod，等待集群状态变化后重试。
 
 调度器一次只为一个 Pod 执行调度周期，但绑定周期可以与后续 Pod 的调度并行。若绑定失败，调度器会从缓存中撤销对该 Pod 的假设，并把它重新放回队列。这个 assume/forget 机制避免了多个 Pod 同时争抢同一份资源。
+
+### 重新入队与 QueueingHint
+
+调度失败后不能对所有 Pending Pod 做无差别全量重试。大规模集群中，节点、Pod、PVC、污点或资源配额的任何变化都可能触发事件；如果每个事件都把所有等待中的 Pod 重新完整调度一遍，调度器会被大量无效的 Filter/Score 计算淹没，真正可调度的 Pod 反而得不到及时处理。
+
+因此，调度失败且被判定为 Unschedulable 的 Pod 会进入 unschedulableQ（较新的实现中也称 unschedulable Pods pool），处于退避期的 Pod 留在 backoffQ，可立即调度的 Pod 才进入 activeQ。集群事件发生时，调度器需要判断哪些等待中的 Pod 值得重试，而不是无条件全部唤醒。
+
+EnqueueExtension 是调度框架中用于控制“某个集群变化是否应触发重试”的接口。实现 PreEnqueue、PreFilter、Filter、Reserve 或 Permit 的插件可以实现它。QueueingHint 是其中的回调：每当相关类型的对象发生变化，调度器向插件询问该事件是否可能让这个 Pod 变得可调度；只有在提示为“可能”时，才把 Pod 放入 activeQ 或 backoffQ 重试。
+
+QueueingHint 不是调度周期的一个阶段，不参与单个 Pod 的 Filter/Score，也不改变调度决策；它属于调度队列的事件过滤机制，作用是减少无效重试。特性门控 \`SchedulerQueueingHints\` 在 1.28 引入 Beta，1.29–1.31 默认关闭，1.32–1.33 恢复默认开启但仍为 Beta，1.34 转为 Stable 并默认启用。更早的版本或关闭该门控时，调度器只能依赖更粗粒度的事件触发和周期重试，调度延迟与无效计算都会更高。
 
 ### 调度框架阶段
 
@@ -291,10 +417,10 @@ controller-manager 中的工作负载控制器创建 Pod，scheduler 为 Pod 选
 - [Assigning Pods to Nodes](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/)
 - [Pod Priority and Preemption](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/)`,
     {
-      versions: 'Kubernetes 1.28+',
+      versions: 'Kubernetes 1.28+；QueueingHint 1.28 Beta、1.29–1.31 默认关闭、1.32–1.33 Beta、1.34 Stable',
       docsUrl: 'https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/',
-      version: 2,
-      replacesContentHash: 'd1a3218423d6d34ae7bac29720a9f7099a7bf8e0cae921555392ea83f3483b4c',
+      version: 3,
+      replacesContentHash: 'ed02356a1fd408738f5af436df9443889b59b55ac0a6e4d4372013f70518ee1f',
       referenceLinks: [
         {
           label: 'Scheduling Framework',
@@ -427,48 +553,374 @@ apiserver 是 controller-manager 唯一的读写入口，etcd 保存集群状态
   ),
   d(
     'k8s-kubelet',
-    `## 组件定位
+    `## 技术定位
 
-kubelet 是节点上的主要代理，负责让本节点实际运行的容器与 API 中的 PodSpec 保持一致。
+kubelet 是运行在每个节点上的节点代理，负责把 API 中“应该在本节点运行的 Pod”落实为实际的容器、卷挂载和网络环境。它不是控制面组件，不参与调度决策，也不直接访问 etcd；它只通过 kube-apiserver 获取绑定到本节点的 Pod、上报 Node 与 Pod 状态，并通过 Lease 维持节点心跳。
 
-## 核心职责
+kubelet 是 Kubernetes 声明式模型在节点侧的最后一环。scheduler 只写出 Binding，controller 只维护副本数量；真正创建 sandbox、拉取镜像、挂载卷、启动容器、执行探针和处理驱逐的是 kubelet 及其调用的容器运行时、CSI 驱动和 CNI 插件。
 
-- watch 分配到本节点的 Pod。
-- 通过 CRI 调用容器运行时创建、启动和删除容器。
-- 通过 CSI 挂载存储，通过 CNI 配置网络。
-- 执行存活、就绪和启动探针。
-- 上报节点和 Pod 状态，资源不足时触发驱逐。
+## 设计原理
 
-## 工作原理
+kubelet 采用 level-triggered（水平触发）的调谐模型：它不依赖 apiserver 推送的每一条事件来执行一次性动作，而是持续比较“本节点期望的 PodSpec”和“运行时中的实际状态”，把差异补上。事件和周期同步都只是触发一次比较，因此重复同步是安全的，失败也可以在下一轮重试。这个模型让 kubelet 能在 apiserver 短暂不可用时继续维持已有 Pod。
 
-kubelet 的 Pod sync loop 会对比期望 PodSpec 和实际容器状态，调用运行时完成变更。PLEG（Pod Lifecycle Event Generator）周期性检查容器状态，发现异常后触发同步。节点心跳通过 Lease 对象上报，超过阈值后 Node 变为 NotReady。
+节点侧能力被拆成几个明确边界：kubelet 负责编排和状态机，CRI 负责容器与镜像，CSI 负责卷挂载，CNI 由 CRI 运行时调用。这样替换容器运行时不需要改 kubelet 的 Pod 逻辑，但边界也意味着排查时必须判断问题落在哪一层。
 
-## 关键配置
+它的职责包括：
 
-- **--container-runtime-endpoint**：CRI socket 地址。
-- **--kube-reserved / --system-reserved**：为系统和 kubelet 预留资源。
-- **--eviction-hard**：节点压力驱逐阈值。
-- **--node-status-update-frequency**：状态上报频率。
-- **--image-gc-high-threshold / low-threshold**：镜像回收阈值。
+- 向 apiserver 注册 Node，持续上报容量、可分配资源、conditions 和 Pod 状态。
+- watch 绑定到本节点的 PodSpec，运行 Pod sync loop，使实际状态向期望状态收敛。
+- 通过 CRI 调用容器运行时创建 Pod sandbox、管理容器和镜像。
+- 通过 CSI 驱动完成卷的挂载、卸载和挂载点清理；底层块设备的 attach/detach 通常由外部 attach/detach controller 完成。
+- 执行 startup、readiness、liveness 探针，维护 Pod conditions 和容器状态。
+- 监控节点资源压力，按驱逐策略回收 Pod；执行镜像垃圾回收和容器日志轮转。
+- 管理 static Pod 和 mirror Pod，使关键节点组件在 apiserver 不可用时仍能运行。
 
-## 常见故障与排查
+## 工作机制
+
+### 启动与节点注册
+
+kubelet 启动时读取 \`--config\` 指定的 KubeletConfiguration（kubeadm 通常为 \`/var/lib/kubelet/config.yaml\`），加载 kubeconfig、容器运行时端点和证书。它向 apiserver 注册 Node；使用 TLS bootstrap 时，先通过 bootstrap token 申请证书，之后由证书轮换机制续期。节点就绪后，kubelet 开始 watch 分配给自己的 Pod。
+
+### Pod sync loop
+
+sync loop 会处理配置变更、Pod 变更、PLEG 事件和周期同步。一次同步大致包括：检查 Pod 是否仍属于本节点、准备卷、创建或复用 sandbox、按顺序运行 Init Container、启动普通容器、执行探针、更新状态。同步是幂等的：已经达到期望状态的容器不会被重复创建，失败的操作会在后续循环中重试。
+
+PLEG（Pod Lifecycle Event Generator）周期性地 relist 容器状态，把容器启动、退出等事件转换成同步触发器。它避免 kubelet 对每个容器高频轮询；PLEG 长时间不健康会导致状态更新滞后，节点可能表现为 NotReady 或 Pod 状态不准确。
+
+### 节点心跳与状态
+
+kubelet 在 \`kube-node-lease\` 命名空间维护一个以节点名命名的 Lease，默认每 10 秒续约一次，Lease 时长为 40 秒。节点控制器根据 Lease 判断节点是否存活；Lease 过期后 Node 会被标记为 NotReady，并触发 Pod 驱逐相关的 toleration 计时。
+
+Node status 还会上报 MemoryPressure、DiskPressure、PIDPressure 和 Ready 等 conditions。kubelet 默认每 10 秒计算一次节点状态；启用 Lease 后，如果状态没有变化，默认每 5 分钟才向 apiserver 上报一次完整状态，状态一旦变化则立即上报。这样既保证故障发现速度，又避免大量重复写入。
+
+### 容器、网络与存储
+
+kubelet 通过 CRI 请求运行时创建 Pod sandbox。sandbox 持有 Pod 的网络命名空间，运行时（例如 containerd 的 CRI 插件）负责调用 CNI 配置网络；kubelet 不直接执行 CNI 插件。业务容器随后加入该 sandbox 的命名空间，因此共享 Pod IP 和端口空间。
+
+卷由 kubelet 的 volume manager 协调：它调用 CSI 驱动的 NodeStageVolume/NodePublishVolume 完成挂载，在 Pod 删除后执行卸载和清理。PersistentVolume 的 attach/detach 属于控制面控制器职责，不应和节点侧挂载混为一谈。
+
+### 探针与终止
+
+kubelet 按 periodSeconds、timeoutSeconds、failureThreshold 和 successThreshold 执行探针。readiness 失败只把 Pod 从就绪端点移除，不重启容器；liveness 失败会重启容器；startup 成功前会抑制 liveness 和 readiness。Pod 的 Ready condition 还受所有普通容器就绪和 readinessGates 影响，不只是某一个 readinessProbe。
+
+删除 Pod 时，kubelet 先执行 preStop，再向容器主进程发送 SIGTERM，等待 terminationGracePeriodSeconds；仍未退出则发送 SIGKILL。preStop 的执行时间计入宽限期，应用不处理 SIGTERM 时会一直等到强制杀死。
+
+### 驱逐与镜像回收
+
+kubelet 根据 evictionHard/evictionSoft 阈值监控 memory.available、nodefs.available、nodefs.inodesFree、imagefs.available 等信号。触发硬阈值后会立即驱逐，软阈值需要持续超过 evictionPressureTransitionPeriod。驱逐顺序不是简单的 QoS 排序：kubelet 优先回收用量超过 requests 的 Pod，再参考 Pod Priority 和超出幅度；Guaranteed Pod 也不是绝对免疫。
+
+镜像回收按 imageGCHighThresholdPercent 和 imageGCLowThresholdPercent 执行；容器日志由 kubelet 按 containerLogMaxSize 和 containerLogMaxFiles 轮转。磁盘和 inode 压力往往先表现为镜像回收、Pod 驱逐，最后才是节点 NotReady。
+
+## 关键配置与实践
+
+以下为 Kubernetes 1.34 默认值。多数旧命令行标志已弃用，推荐写入 KubeletConfiguration（\`kubelet.config.k8s.io/v1beta1\`），命令行标志仅用于覆盖：
+
+- \`nodeStatusUpdateFrequency\`：10s，计算节点状态的频率。
+- \`nodeStatusReportFrequency\`：5m；若显式设置了 nodeStatusUpdateFrequency，则默认跟随该值。
+- \`nodeLeaseDurationSeconds\`：40，Lease 时长；实际每 10s 续约。
+- \`maxPods\`：110。
+- \`cgroupDriver\`：默认 cgroupfs；kubeadm 通常设为 systemd，必须与容器运行时一致。
+- \`evictionHard\`：memory.available 100Mi、nodefs.available 10%、nodefs.inodesFree 5%、imagefs.available 15%。
+- \`imageGCHighThresholdPercent\` / \`imageGCLowThresholdPercent\`：85 / 80。
+- \`containerLogMaxSize\` / \`containerLogMaxFiles\`：10Mi / 5。
+- \`podPidsLimit\`：-1；\`failSwapOn\`：true；\`serializeImagePulls\`：true；\`registryPullQPS\`：5。
+- \`containerRuntimeEndpoint\`：命令行标志的默认值为 \`unix:///run/containerd/containerd.sock\`，实际部署应按运行时配置。
+- \`kubeReserved\` / \`systemReserved\`：分别为 Kubernetes 组件和系统进程预留 CPU、内存等资源；不设置会让 Pod 与系统进程直接争抢。
+
+这些默认值只对 1.34 成立。升级 Kubernetes 或切换发行版后应重新核对配置，不能把旧版本的默认值直接套用。
+
+## 常见问题与限制
 
 | 现象 | 常见原因 | 排查 |
 |---|---|---|
-| ContainerCreating 卡住 | 镜像拉取、CNI、CSI 或 sandbox 失败 | \`kubectl describe pod\`、节点 kubelet 日志 |
-| Node NotReady | kubelet 停止、运行时异常、证书过期 | \`systemctl status kubelet\`、节点日志 |
-| Pod 被驱逐 | 磁盘、内存或 inode 压力 | 看节点 conditions 和 eviction 事件 |
-| 探针反复失败 | 应用启动慢或探针配置错误 | 检查 probe 参数和应用日志 |
+| Node NotReady | kubelet 停止、运行时 socket 不可用、证书过期、到 apiserver 的网络中断 | \`systemctl status kubelet\`、节点日志、Lease 与证书 |
+| ContainerCreating 卡住 | 镜像拉取失败、CNI 未配置、CSI 挂载失败、sandbox 创建失败 | \`kubectl describe pod\`、kubelet 与运行时日志 |
+| Pod 被驱逐 | 内存、磁盘或 inode 压力，超过 requests | 看 Node conditions、eviction 事件和节点磁盘 |
+| 探针反复失败 | 应用启动慢、超时过短、端口或路径错误 | 检查 probe 参数、容器日志和网络 |
+| 镜像拉取失败 | 仓库凭证、限流、证书或磁盘空间 | 检查 imagePullSecrets、运行时 registry 配置 |
+| kubelet 与运行时通信失败 | socket 路径不一致、CRI 版本不兼容、权限不足 | \`crictl info\`、\`--container-runtime-endpoint\` |
+| cgroup 驱动不一致 | kubelet 与运行时一个用 cgroupfs、一个用 systemd | 对比配置并统一后重启 |
 
-## 相关组件
+## 技术关联
 
-容器运行时通过 CRI 对接；CNI 负责网络；CSI 负责存储；apiserver 接收状态；scheduler 决定 Pod 落点。
+kubelet 只通过 apiserver 读取 PodSpec、写入状态和续约 Lease，不直接访问 etcd。它通过 CRI 依赖容器运行时；CNI 由运行时在创建 sandbox 时调用，不由 kubelet 直接调用；CSI 由 kubelet 的 volume manager 调用，控制面的 attach/detach 由外部控制器完成。kube-proxy 与 kubelet 同节点运行，但职责独立：前者维护 Service 转发规则，后者管理 Pod 生命周期。
+
+apiserver 短暂不可用时，kubelet 会继续运行已经拿到的 Pod，static Pod 也不受影响；但新的 Pod 变更、状态上报和证书轮换会受阻。这个行为解释了为什么“控制面挂了，已有业务仍在跑”，也解释了为什么不能把 kubelet 当成 etcd 的客户端。
 
 ## 参考资料
 
 - [kubelet](https://kubernetes.io/docs/concepts/overview/components/#kubelet)
-- [Node Status](https://kubernetes.io/docs/reference/node/node-status/)`,
-    { docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kubelet' },
+- [Kubelet Configuration (v1beta1)](https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/)
+- [Node Status](https://kubernetes.io/docs/reference/node/node-status/)
+- [kubelet command-line reference](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/)
+- [Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)`,
+    {
+      versions: 'Kubernetes 1.34；默认值以该版本 KubeletConfiguration 为准',
+      docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kubelet',
+      version: 2,
+      replacesContentHash: 'b06009e6508d296ac938b86be03e81a1d3bd5b67249a0eaa838ae8bd6fa0dc36',
+      referenceLinks: [
+        {
+          label: 'Kubelet Configuration (v1beta1)',
+          url: 'https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/',
+        },
+        {
+          label: 'Node Status',
+          url: 'https://kubernetes.io/docs/reference/node/node-status/',
+        },
+        {
+          label: 'kubelet command-line reference',
+          url: 'https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/',
+        },
+        {
+          label: 'Node-pressure Eviction',
+          url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/',
+        },
+      ],
+    },
+  ),
+  d(
+    'k8s-cri',
+    `## 技术定位
+
+CRI（Container Runtime Interface）是 kubelet 与容器运行时之间的 gRPC 协议。它定义“节点代理如何请求运行时创建 sandbox、启停容器、拉取镜像、执行命令和读取状态”，不定义容器本身如何运行，也不定义网络和存储。kubelet 是客户端，容器运行时是服务端，双方通过 Unix socket 通信；kubelet 的 \`containerRuntimeEndpoint\`（命令行标志 \`--container-runtime-endpoint\`）指向该 socket。
+
+CRI 的价值在于解耦。kubelet 不需要为每种运行时编写专用代码，运行时也不必实现 Kubernetes 的全部对象语义。containerd 通过内置 CRI 插件实现 CRI，CRI-O 则把 CRI 作为自身的主要接口；两者都可以在 kubelet 看来提供相同的 RuntimeService 和 ImageService。
+
+## 设计原理
+
+在 CRI 之前，kubelet 内置了针对特定运行时的适配代码，运行时变更会牵动 Kubernetes 核心。CRI 把节点侧运行时操作抽象成稳定的 gRPC 契约，使运行时可以独立演进、替换和裁剪。它只覆盖“运行时能力”，不试图统一 CNI、CSI、镜像仓库协议或 OCI 运行时规范。
+
+CRI 也不是 Pod 调度或控制器逻辑的一部分。它不决定 Pod 放在哪个节点，不维护副本数，不创建 Service；这些职责属于 scheduler、controller-manager 和 kube-proxy。
+
+## 工作机制
+
+### 核心接口
+
+CRI 由两组 gRPC 服务组成，运行时必须同时提供：
+
+- **RuntimeService**：负责 Pod sandbox 与容器的生命周期。核心 RPC 包括 \`Version\`、\`RunPodSandbox\`、\`StopPodSandbox\`、\`RemovePodSandbox\`、\`PodSandboxStatus\`、\`ListPodSandbox\`、\`CreateContainer\`、\`StartContainer\`、\`StopContainer\`、\`RemoveContainer\`、\`ContainerStatus\`、\`ListContainers\`、\`UpdateContainerResources\`、\`ExecSync\`、\`Exec\`、\`Attach\`、\`PortForward\`、\`ContainerStats\`、\`PodSandboxStats\`、\`ReopenContainerLog\`、\`UpdateRuntimeConfig\` 和 \`Status\`。部分版本还提供 checkpoint、容器事件流和 Pod sandbox 指标等可选能力。
+- **ImageService**：负责镜像。核心 RPC 包括 \`ListImages\`、\`ImageStatus\`、\`PullImage\`、\`RemoveImage\` 和 \`ImageFsInfo\`；\`ImageFsInfo\` 返回镜像文件系统用量，供 kubelet 做镜像回收判断。
+
+\`Version\` 用于协商 API 版本并返回运行时名称和版本；\`Status\` 返回 RuntimeReady、NetworkReady 等运行时条件。kubelet 通过这些结果判断运行时是否可用，而不是只检查进程是否存在。
+
+### PodSandbox 与容器
+
+Pod 在 CRI 中不是一个单独的“容器”，而是 sandbox 加若干容器。\`RunPodSandbox\` 创建 Pod 级运行环境，通常是一个持有网络命名空间的 pause 容器；运行时随后调用 CNI 配置网络，并把 Pod IP、additional IPs、命名空间等信息写入 sandbox 状态。业务容器由 \`CreateContainer\` 创建并加入该 sandbox，因此共享网络和 IPC 命名空间。
+
+这个分工解释了常见故障的归属：sandbox 创建失败通常指向 CNI、pause 镜像或运行时；容器创建失败则可能是镜像、命令、卷挂载或安全上下文。kubelet 只负责发起请求和解释结果，不直接执行 CNI 插件。
+
+\`RuntimeClass\` 通过 \`runtime_handler\` 选择运行时处理器，例如默认 runc、gVisor 或 Kata。处理器必须在运行时的 CRI 配置中预先定义，否则 Pod 无法启动。
+
+### 调用流程
+
+一次典型的 Pod 启动大致是：
+
+1. kubelet 调用 \`Version\` 确认 API 兼容，调用 \`Status\` 确认运行时和网络就绪。
+2. 调用 \`RunPodSandbox\` 创建 sandbox；运行时配置 CNI 并返回 sandbox ID。
+3. 通过 ImageService \`PullImage\` 拉取镜像；镜像已存在时可以跳过或校验。
+4. 调用 \`CreateContainer\` 创建容器，再调用 \`StartContainer\` 启动。
+5. kubelet 通过 \`ContainerStatus\`、\`PodSandboxStatus\` 和 stats 更新 Pod 状态、执行探针和资源统计。
+6. 删除时依次 \`StopContainer\`、\`RemoveContainer\`、\`StopPodSandbox\`、\`RemovePodSandbox\`。
+
+\`ExecSync\` 用于短命令并同步返回输出；\`Exec\`、\`Attach\` 和 \`PortForward\` 通过流式连接工作，kubelet 负责把客户端连接代理到运行时。\`ReopenContainerLog\` 用于日志轮转后重新打开日志文件。
+
+## 关键配置与实践
+
+### 版本与兼容性
+
+CRI API 自 Kubernetes 1.23 起为 Stable。Kubernetes 1.26 及以后，kubelet 要求运行时支持 v1 CRI API；运行时不支持 v1 时，kubelet 无法注册节点。更早的 v1alpha2 已不再被新 kubelet 使用，升级节点时必须先确认运行时的 CRI 版本。
+
+版本不匹配的典型表现是 kubelet 启动日志中的 CRI 连接错误、节点无法注册，或 \`crictl info\` 无法连接。此时应检查 kubelet 的 endpoint、运行时 CRI 插件是否启用，以及双方支持的 API 版本，而不是只重启 kubelet。
+
+## 常见问题与限制
+
+### 运维与排查
+
+\`crictl\` 是直接调用 CRI 的调试工具，常用于绕过 kubectl 观察节点侧状态：
+
+~~~bash
+crictl --runtime-endpoint unix:///run/containerd/containerd.sock info
+crictl pods
+crictl ps -a
+crictl images
+crictl logs <container-id>
+crictl inspect <container-id>
+~~~
+
+\`crictl\` 与 kubelet 使用同一套 CRI，能看到 kubelet 看到的 sandbox 和容器；但它也可以停止、删除容器，生产环境应只用于只读排查或明确的维护操作。
+
+常见问题包括：socket 路径不一致或权限不足；运行时 CRI 插件未启用；CNI 配置缺失导致 sandbox 创建失败；镜像仓库认证失败；磁盘或 inode 耗尽；运行时与 kubelet 的 cgroup 驱动不一致；gRPC 超时或运行时过载。排查时应同时看 kubelet 日志、运行时日志和 \`crictl info\` 的 RuntimeReady/NetworkReady 条件。
+
+## 技术关联
+
+CRI 不是 OCI。CRI 是编排层与运行时之间的高层接口，OCI runtime spec 规定底层如何创建进程、命名空间和 cgroup；containerd 同时涉及两者：对外实现 CRI，对内调用 runc 等 OCI 运行时。
+
+CRI 也不是 CNI 或 CSI。CNI 由运行时在创建 sandbox 时调用，CSI 由 kubelet 的 volume manager 调用；它们分别解决网络和存储，不通过 CRI 传递。
+
+## 参考资料
+
+- [Container Runtime Interface (CRI)](https://kubernetes.io/docs/concepts/architecture/cri/)
+- [CRI v1 API proto (release-1.34)](https://github.com/kubernetes/cri-api/blob/release-1.34/pkg/apis/runtime/v1/api.proto)
+- [Debugging Kubernetes nodes with crictl](https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/)
+- [kubelet command-line reference](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/)`,
+    {
+      versions: 'CRI v1 自 Kubernetes 1.23 Stable；kubelet 1.26+ 要求运行时支持 v1',
+      docsUrl: 'https://kubernetes.io/docs/concepts/architecture/cri/',
+      repoUrl: 'https://github.com/kubernetes/cri-api',
+      version: 2,
+      referenceLinks: [
+        {
+          label: 'CRI v1 API proto (release-1.34)',
+          url: 'https://github.com/kubernetes/cri-api/blob/release-1.34/pkg/apis/runtime/v1/api.proto',
+        },
+        {
+          label: 'Debugging Kubernetes nodes with crictl',
+          url: 'https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/',
+        },
+        {
+          label: 'kubelet command-line reference',
+          url: 'https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/',
+        },
+      ],
+    },
+  ),
+  d(
+    'k8s-containerd',
+    `## 技术定位
+
+containerd 是 CNCF 毕业的容器运行时守护进程，负责镜像分发、内容存储、文件系统快照、容器任务和运行时调用。Kubernetes 通过 containerd 内置的 CRI 插件使用它：kubelet 调用 CRI，CRI 插件再调用 containerd 内部的 content store、snapshotter 和 runtime v2，最终由 runc 等 OCI 运行时创建容器进程。
+
+containerd 不只是“runc 的包装”。它维护镜像内容的本地存储、层解包后的快照、容器元数据和任务生命周期；runc 只负责按 OCI spec 创建一次进程然后退出，真正长期托管容器的是 shim 进程。理解这层分工，才能解释为什么 containerd 重启通常不会杀死运行中的容器，以及为什么镜像、快照和 shim 会成为不同的故障面。
+
+本文以 containerd 2.0 的版本化文档为准。1.x 的插件 ID、配置版本和 sandbox 镜像字段与 2.x 不同，不能把 2.x 的配置直接套到 1.x，反之亦然。
+
+## 设计原理
+
+containerd 的核心设计是解耦：镜像内容、文件系统快照、容器任务和底层 OCI 运行时分别由 content store、snapshotter、runtime v2/shim 和 runc 负责。守护进程只做编排和元数据管理，容器进程由独立 shim 托管。这样组件可以独立演进和替换，故障域也被切开——例如 containerd 重启不必杀死容器，某个 shim 崩溃也未必影响其他容器。
+
+containerd 以守护进程方式运行，对外提供 gRPC 服务，内部由插件组成。与 Kubernetes 相关的主要部分包括：
+
+- **CRI 插件**：实现 Kubernetes CRI。containerd 2.x 把它拆成两个插件 ID：\`io.containerd.cri.v1.runtime\` 负责 Pod sandbox、容器、CNI 和流式接口，\`io.containerd.cri.v1.images\` 负责镜像、仓库和 snapshotter。containerd 1.x 使用单一的 \`io.containerd.grpc.v1.cri\`。
+- **Content Store**：按 digest 保存镜像 manifest、config 和 layer，内容不可变，天然支持去重和校验。
+- **Snapshotter**：把镜像层解包成文件系统快照。默认通常是 overlayfs；它负责 committed snapshot 和容器可写的 active snapshot。
+- **Runtime v2 与 shim**：containerd 为每个容器启动 \`containerd-shim-runc-v2\` 之类的 shim。shim 调用 runc 创建容器，runc 完成命名空间、cgroup 和进程启动后退出；shim 继续作为容器进程的父进程，管理 stdio、回收退出状态并向 containerd 报告。
+- **OCI 运行时**：runc 按 OCI runtime spec 创建进程；gVisor、Kata 等可以通过不同的 runtime handler 接入。
+- **CNI**：由 CRI 插件在创建 sandbox 时调用，使用 \`/etc/cni/net.d\` 中的配置和 \`/opt/cni/bin\` 中的插件。kubelet 不直接执行 CNI。
+
+containerd 使用命名空间隔离不同客户端。Kubernetes 的镜像和容器位于 \`k8s.io\` 命名空间，因此用 \`ctr\` 查看时必须加 \`-n k8s.io\`，否则会看到空列表；\`crictl\` 则直接走 CRI，不需要手动指定该命名空间。
+
+## 工作机制
+
+### 镜像与容器数据流
+
+拉取镜像时，containerd 先解析 registry 返回的 index 或 manifest，确定目标平台的 manifest，再把 config 和 layers 按 digest 写入 content store。随后 snapshotter 按顺序解包每一层，形成 committed snapshot；创建容器时再在其上建立可写的 active snapshot，作为容器 rootfs。
+
+这个流程意味着镜像“拉取成功”不等于“可以启动”：内容可能已下载但解包失败，snapshotter 可能磁盘不足，或者镜像的 entrypoint 与安全上下文不兼容。排查时要把 pull、unpack 和 create/start 三个阶段分开看。
+
+容器启动时，CRI 插件把 OCI bundle 交给 runtime v2，shim 调用 runc 创建进程。容器退出后，shim 保留退出状态，直到 containerd 或 kubelet 读取并清理。shim 崩溃会影响对应容器，但不会影响其他容器；containerd 守护进程重启时，已有 shim 和容器通常继续运行，只是 CRI 服务短暂不可用，kubelet 会重试。
+
+镜像回收由 containerd 的垃圾回收机制完成，kubelet 通过 CRI 的 \`ImageFsInfo\` 和删除镜像请求参与决策。删除镜像只是移除引用，不代表 content 和 snapshot 立即释放；未被引用的内容要等 GC 运行后才回收。
+
+## 关键配置与实践
+
+### 配置与版本
+
+containerd 的主配置通常位于 \`/etc/containerd/config.toml\`。containerd 2.0 引入配置版本 3：
+
+~~~toml
+version = 3
+
+[plugins.'io.containerd.cri.v1.images']
+  snapshotter = 'overlayfs'
+  [plugins.'io.containerd.cri.v1.images'.pinned_images]
+    sandbox = 'registry.k8s.io/pause:3.10'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+  runtime_type = 'io.containerd.runc.v2'
+  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+    SystemdCgroup = true
+~~~
+
+1.x 的配置版本为 2，插件 ID 为 \`io.containerd.grpc.v1.cri\`，sandbox 镜像字段为 \`sandbox_image\`。containerd 2.x 仍能读取版本 2 并自动转换为版本 3，但版本 1 已在 2.0 移除。升级前应备份配置并检查转换结果，而不是假定旧字段仍然生效。
+
+几个容易出错的点：
+
+- \`SystemdCgroup = true\` 必须与 kubelet 的 \`cgroupDriver: systemd\` 一致。两者不一致时，容器可能启动失败或资源限制行为异常。kubeadm 通常把两边都设为 systemd。
+- \`pinned_images.sandbox\`（1.x 为 \`sandbox_image\`）必须能从节点访问的仓库拉取；离线环境要提前同步 pause 镜像。
+- registry 的镜像、TLS 和认证通过 \`config_path\` 指向的 \`hosts.toml\` 配置，例如 \`/etc/containerd/certs.d/docker.io/hosts.toml\`。kubelet 传递的 imagePullSecrets 会作为 CRI 拉取凭证使用，但仓库地址和 TLS 仍由 containerd 配置决定。
+- CRI socket 的默认路径通常是 \`/run/containerd/containerd.sock\`；kubelet 的 endpoint 必须指向实际路径。
+
+## 常见问题与限制
+
+### 运维与排查
+
+常用检查命令：
+
+~~~bash
+systemctl status containerd
+journalctl -u containerd --since "30 min ago"
+containerd config dump
+ctr plugins ls
+ctr -n k8s.io images ls
+ctr -n k8s.io containers ls
+ctr -n k8s.io tasks ls
+crictl info
+~~~
+
+\`ctr\` 是 containerd 原生客户端，适合看 content、snapshot 和插件状态；\`crictl\` 走 CRI，更接近 kubelet 的视角。两者看到的是同一份数据，但命名空间和接口不同。
+
+containerd 的数据目录通常在 \`/var/lib/containerd\`，包含 content store 和各个 snapshotter 的快照。磁盘或 inode 耗尽时，镜像拉取、层解包和容器创建都会失败；应先确认是 content、snapshot 还是容器日志占用，再执行镜像回收或清理，不要直接删除数据目录。
+
+升级 containerd 时建议先 cordon 并 drain 节点，停止 kubelet，备份配置，再升级并重启 containerd，确认 \`crictl info\` 的 RuntimeReady/NetworkReady 正常后再恢复 kubelet 和调度。仅重启 containerd 通常不会杀死运行中的容器，但会造成短暂的 CRI 不可用。
+
+### 常见故障与排查
+
+| 现象 | 常见原因 | 排查 |
+|---|---|---|
+| 节点无法注册或 CRI 连接失败 | socket 路径错误、containerd 未启动、CRI 插件未启用 | \`systemctl status containerd\`、\`crictl info\`、kubelet endpoint |
+| Pod sandbox 创建失败 | sandbox 镜像拉取失败、CNI 配置缺失、网络插件未就绪 | containerd 日志、\`/etc/cni/net.d\`、pause 镜像 |
+| 镜像拉取失败 | 仓库认证、TLS、限流、磁盘空间 | \`crictl pull\`、hosts.toml、节点磁盘 |
+| 容器启动失败 | snapshotter 解包失败、cgroup 驱动不一致、权限或 seccomp 限制 | containerd/runc 日志、\`SystemdCgroup\`、安全上下文 |
+| 磁盘持续增长 | 镜像和快照未回收、日志占用 | \`ctr -n k8s.io images ls\`、snapshot 用量、GC |
+| shim 崩溃或容器异常退出 | 运行时缺陷、OOM、runc 配置错误 | \`crictl ps -a\`、shim 日志、内核日志 |
+| 节点重启后容器未恢复 | kubelet 未启动、CRI 未就绪、状态目录损坏 | 启动顺序、\`crictl pods\`、containerd 数据目录 |
+
+## 技术关联
+
+containerd 通过 CRI 插件实现 CRI，kubelet 通过 CRI 调用它；它通过 runc 等 OCI 运行时实现容器创建，通过 CNI 配置 Pod 网络，通过 snapshotter 管理文件系统。它不直接访问 etcd，也不参与调度和 Service 转发。Pod 的网络命名空间由 sandbox 持有，CNI 由 CRI 插件调用；存储卷由 kubelet 通过 CSI 协调，不经过 containerd 的 snapshotter（除非是镜像层本身）。
+
+## 参考资料
+
+- [containerd CRI plugin architecture (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/cri/architecture.md)
+- [containerd CRI config guide (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/cri/config.md)
+- [containerd PLUGINS (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/PLUGINS.md)
+- [containerd Content Flow (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/content-flow.md)
+- [Containerd docs](https://containerd.io/docs/)`,
+    {
+      versions: 'containerd 2.0（配置版本 3）；1.x 使用配置版本 2 和 io.containerd.grpc.v1.cri',
+      docsUrl: 'https://github.com/containerd/containerd/blob/release/2.0/docs/cri/config.md',
+      repoUrl: 'https://github.com/containerd/containerd',
+      version: 2,
+      referenceLinks: [
+        {
+          label: 'containerd CRI architecture (release/2.0)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/cri/architecture.md',
+        },
+        {
+          label: 'containerd CRI config (release/2.0)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/cri/config.md',
+        },
+        {
+          label: 'containerd Content Flow (release/2.0)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/content-flow.md',
+        },
+        {
+          label: 'containerd PLUGINS (release/2.0)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/PLUGINS.md',
+        },
+      ],
+    },
   ),
   d(
     'k8s-pod',
@@ -530,9 +982,11 @@ Pod 的 phase 包括 Pending、Running、Succeeded、Failed 和 Unknown。phase 
 
 ## 关键配置与实践
 
-- **resources.requests**：调度器据此选择节点；requests 过低会导致节点超卖，过高会浪费容量。
+- **resources.requests**：调度器选择节点、kubelet 判断资源压力的基线；requests 过低会导致节点超卖，过高会浪费容量。
 - **resources.limits**：限制容器可用资源；CPU 超限会被节流，内存超限通常触发 OOMKill。
-- **QoS**：所有容器都设置 requests 且等于 limits 时为 Guaranteed；完全未设置时为 BestEffort；其余为 Burstable。节点压力驱逐时，BestEffort 通常最先被驱逐。
+- **QoS**：QoS 由 Pod 内所有容器的 CPU/内存 requests 与 limits 共同决定，不是单个容器的属性。Guaranteed 要求每个容器都同时设置 CPU 和内存的 request 与 limit，且两者相等、均大于 0；只设置内存或只设置 CPU、只有部分容器设置，都不满足 Guaranteed。不满足 Guaranteed、但至少有一个容器（或 Pod 级资源）设置了 CPU/内存 request 或 limit 时为 Burstable；所有容器都没有设置 CPU/内存 request 和 limit 时为 BestEffort。
+- **Pod 级资源**：Kubernetes 1.34 起，\`spec.resources\` 允许在 Pod 层声明 CPU/内存的 requests 与 limits，由 Pod 内所有容器共享。Pod 级 requests 参与调度，Pod 级 limits 约束整个 Pod；同时存在容器级资源时，Pod 级资源优先影响调度与 QoS 判定。它适合容器之间难以静态拆分、但整体预算需要可控的场景（例如主容器与边车共享一个资源池）。该能力由 \`PodLevelResources\` 特性门控控制，1.34 进入 Beta 并默认启用；截至本文核对时仍为 Beta，不应假定所有 1.34+ 集群都已启用。
+- **节点压力驱逐不是简单的 QoS 排序**：kubelet 依据“用量是否超过 requests”、Pod Priority 和超出 requests 的程度决定顺序。先驱逐用量超过 requests 的 BestEffort/Burstable Pod，按 Priority 和超出幅度排序；最后才驱逐 Guaranteed，以及用量未超过 requests 的 Burstable Pod，同样按 Priority 排序。Guaranteed 只是最不容易因其他 Pod 消耗资源而被驱逐，并非免疫：当系统守护进程消耗超过预留、节点必须回收资源时，Guaranteed Pod 仍可能被驱逐。QoS 是资源配置的分类结果，不是容量规划、限流或可用性保证；真正的资源保障需要准确的 requests/limits、PriorityClass、PDB 和节点预留共同配合。
 - **terminationGracePeriodSeconds**：应覆盖应用处理未完成请求的最长时间；preStop 的执行时间也计入该窗口。
 - **serviceAccountName**：决定 Pod 访问 API 的身份，应按最小权限配置。
 - **securityContext**：可设置运行用户、只读根文件系统、能力集和 seccomp 等；Pod 级配置可被容器级覆盖。
@@ -559,12 +1013,14 @@ Pod 由 ReplicaSet 维持副本，Deployment 通过 ReplicaSet 管理无状态 P
 - [Pod Lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/)
 - [Sidecar Containers](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)
 - [Configure Liveness, Readiness and Startup Probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)
-- [Pod Quality of Service Classes](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/)`,
+- [Pod Quality of Service Classes](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/)
+- [Assign Pod-level CPU and memory resources](https://kubernetes.io/docs/tasks/configure-pod-container/assign-pod-level-resources/)
+- [Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)`,
     {
-      versions: 'Kubernetes 1.28+；原生边车容器 1.29 Beta、1.33 Stable',
+      versions: 'Kubernetes 1.28+；原生边车容器 1.29 Beta、1.33 Stable；Pod 级资源 1.34 Beta',
       docsUrl: 'https://kubernetes.io/docs/concepts/workloads/pods/',
-      version: 2,
-      replacesContentHash: '5e911f0e59c21e80cd187baf2ce022fc4c27e36b0b232c361cd1fb0277568e84',
+      version: 3,
+      replacesContentHash: '843eacb1a5e965fc554c842bc724ea8282dd9533b9ef68661787c474a8224b6c',
       referenceLinks: [
         { label: 'Pod Lifecycle', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/' },
         { label: 'Sidecar Containers', url: 'https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/' },
@@ -573,6 +1029,14 @@ Pod 由 ReplicaSet 维持副本，Deployment 通过 ReplicaSet 管理无状态 P
           url: 'https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/',
         },
         { label: 'Pod QoS Classes', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/' },
+        {
+          label: 'Pod-level CPU and Memory Resources',
+          url: 'https://kubernetes.io/docs/tasks/configure-pod-container/assign-pod-level-resources/',
+        },
+        {
+          label: 'Node-pressure Eviction',
+          url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/',
+        },
       ],
     },
   ),
@@ -859,11 +1323,19 @@ ClusterIP 是分配自 Service CIDR 的虚拟地址，通常不绑定到任何�
 
 kube-proxy 是常见实现之一，但并非唯一实现。使用 eBPF 数据面的 CNI 可以在内核中直接完成 Service 转发，从而替代 kube-proxy。理解这一点很重要：Service 是 API 对象和转发语义，kube-proxy 只是可选的数据面实现。
 
-### EndpointSlice
+### EndpointSlice 与端点状态
 
-EndpointSlice 控制器根据 Service 的 selector 选择 Pod，并把就绪后端的地址和端口写入 EndpointSlice。每个切片通过 kubernetes.io/service-name 标签关联 Service，默认每个切片最多包含 100 个端点。相比单个庞大的 Endpoints 对象，分片降低了大规模集群的更新和 watch 压力。
+EndpointSlice 控制器根据 Service 的 selector 选出 Pod，并把符合条件的后端写入 EndpointSlice。切片中保存的是“被 selector 选中的端点”，并不等于“全部 ready 的端点”：未就绪的 Pod 仍可能出现在切片里，只是 condition 不同。每个端点记录 addresses、ports、nodeName、zone 等地址、端口和拓扑信息，并通过 kubernetes.io/service-name 标签关联 Service。默认每个切片最多包含 100 个端点，分片降低了大规模集群的更新和 watch 压力。
 
-每个端点除了地址和端口，还带有 conditions：ready 表示是否可接收流量，serving 表示是否正在提供服务，terminating 表示是否正在终止。默认只有 ready 端点会参与转发；publishNotReadyAddresses: true 可以把未就绪地址也发布出去，常用于 Headless Service 的成员发现。
+每个端点带有三个 condition：
+
+- **serving**：端点当前正在提供服务；对 Pod 后端而言，它对应 Pod 的 Ready condition。
+- **terminating**：Pod 已收到删除时间戳，正在终止，通常早于容器真正退出。
+- **ready**：本质上是“serving 且未 terminating”的快捷判断；当 Service 设置 \`publishNotReadyAddresses: true\` 时，ready 还会恒为 true。
+
+因此，“Pod 通过 readinessProbe”并不等于 EndpointSlice 端点立刻 ready。Pod 的 Ready condition 还取决于所有普通容器的就绪状态（配置了 readinessProbe 的容器需要探针成功，未配置的容器运行即视为就绪）、readinessGates 中声明的自定义条件等；任一条件不满足，Pod 就不会 Ready，端点也不会 ready。readinessProbe 只是影响容器就绪的因素之一。
+
+默认数据面只把 ready 端点作为转发目标。正在终止但仍 serving 的端点通常会被忽略；当所有可用端点都在终止时，部分数据面仍可能继续向 serving 且 terminating 的端点转发，以减少滚动更新期间的连接中断。\`publishNotReadyAddresses: true\` 会把未就绪地址也发布出去，常用于 Headless Service 的成员发现，但不代表这些端点可以安全接收业务流量。
 
 ### 服务类型
 
@@ -884,9 +1356,9 @@ clusterIP: None 创建 Headless Service，不分配虚拟 IP。DNS 直接返回�
 ### 创建与端点维护
 
 1. 创建 Service 后，控制器分配 ClusterIP（Headless 除外）。
-2. EndpointSlice 控制器监听 Service 与 Pod，按 selector 计算后端集合。
-3. Pod 通过 readinessProbe 后，端点 condition.ready 变为 true。
-4. 数据面组件监听 EndpointSlice 变化，更新节点转发规则。
+2. EndpointSlice 控制器监听 Service 与 Pod，按 selector 计算被选中的后端集合。
+3. 控制器把端点写入 EndpointSlice，并根据 Pod 的 Ready condition 与删除状态维护 serving、terminating、ready。
+4. 数据面组件监听 EndpointSlice 变化，只把 ready 端点加入转发规则。
 5. CoreDNS 根据 Service 生成 DNS 记录，集群内可通过名称访问。
 
 Service 没有 selector 时不会自动生成 EndpointSlice，需要手工维护 Endpoints 或 EndpointSlice，或由 Operator 管理。选择器与 Pod 标签不一致时，端点集合为空，连接会失败而不是自动回退。
@@ -915,8 +1387,8 @@ sessionAffinity: ClientIP 可以把同一客户端 IP 的请求固定到同一�
 
 ## 常见问题与限制
 
-- **EndpointSlice 为空**：selector 不匹配、Pod 未就绪、命名空间不一致或 Service 没有 selector 且未手工维护端点。
-- **有 Pod 但没流量**：readinessProbe 失败、端口名不匹配或 NetworkPolicy 阻断了流量。
+- **EndpointSlice 为空**：selector 与 Pod 标签不匹配、命名空间不一致，或 Service 没有 selector 且未手工维护端点；Pod 未就绪不会让切片变空，而是让端点 ready=false。
+- **有 Pod 但没流量**：Pod 未 Ready、readinessProbe 失败、readinessGates 未满足、端口名不匹配或 NetworkPolicy 阻断了流量。
 - **连接被拒绝**：targetPort 与实际监听端口不一致，或后端只监听 127.0.0.1。
 - **Headless 被误解为负载均衡**：Headless 只返回地址列表，不提供虚拟 IP 和自动选路。
 - **会话保持不可靠**：ClientIP 亲和依赖源地址，经过 NAT、Ingress 或服务网格后可能失效。
@@ -932,17 +1404,22 @@ Pod 是 Service 的后端，Service 通过 selector 选择就绪 Pod。EndpointS
 
 - [Service](https://kubernetes.io/docs/concepts/services-networking/service/)
 - [EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)
+- [EndpointSlice API reference](https://kubernetes.io/docs/reference/kubernetes-api/service-resources/endpoint-slice-v1/)
 - [DNS for Services and Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/)
 - [Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/)`,
     {
       versions: 'Kubernetes 1.28+',
       docsUrl: 'https://kubernetes.io/docs/concepts/services-networking/service/',
-      version: 2,
-      replacesContentHash: 'f543df9d2761736fabe6dc64131dd18c4c91432f6b7fc9b824a0ef71b2fda409',
+      version: 3,
+      replacesContentHash: '7545b630d27792ac92b14fa12ddf7c4a7b1896d81676255c833ff658e0f554df',
       referenceLinks: [
         {
           label: 'EndpointSlices',
           url: 'https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/',
+        },
+        {
+          label: 'EndpointSlice API Reference',
+          url: 'https://kubernetes.io/docs/reference/kubernetes-api/service-resources/endpoint-slice-v1/',
         },
         {
           label: 'DNS for Services and Pods',

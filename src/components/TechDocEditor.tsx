@@ -27,9 +27,22 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { MarkdownWorkspace } from './markdown/MarkdownWorkspace';
 
+export interface TechDocEditorBusy {
+  saving: boolean;
+  verifying: boolean;
+}
+
 export interface TechDocEditorHandle {
   save: (silent?: boolean) => Promise<boolean>;
   isDirty: () => boolean;
+  isBusy: () => boolean;
+  isVerifying: () => boolean;
+  /**
+   * Drops local edits and returns the editor to the last server-confirmed
+   * snapshot. It never sends a write of its own; if a save is already in
+   * flight it waits for that request to finish first.
+   */
+  discard: () => Promise<boolean>;
 }
 
 interface BaseDoc {
@@ -73,9 +86,13 @@ export const TechDocEditor = forwardRef<
     autoSave?: boolean;
     onSaved?: (node: TechNode) => void;
     onDirtyChange?: (dirty: boolean) => void;
+    onBusyChange?: (busy: TechDocEditorBusy) => void;
     minHeight?: number;
   }
->(function TechDocEditor({ node, autoSave = true, onSaved, onDirtyChange, minHeight = 420 }, ref) {
+>(function TechDocEditor(
+  { node, autoSave = true, onSaved, onDirtyChange, onBusyChange, minHeight = 420 },
+  ref,
+) {
   const { push } = useToast();
   const [draft, setDraft] = useState<BaseDoc>(() => baseFromNode(node));
   const [base, setBase] = useState<BaseDoc>(() => baseFromNode(node));
@@ -85,6 +102,14 @@ export const TechDocEditor = forwardRef<
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const inFlightRef = useRef<Promise<boolean> | null>(null);
+  const debounceRef = useRef<number | null>(null);
+  // Set while discard is unwinding. It blocks manual and debounced saves so a
+  // new request cannot start after the in-flight one has been awaited.
+  const discardingRef = useRef(false);
+  const verifyingRef = useRef(verifying);
+  verifyingRef.current = verifying;
+  const saveStateRef = useRef(saveState);
+  saveStateRef.current = saveState;
   const dirty = !sameDoc(draft, base);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
@@ -101,6 +126,7 @@ export const TechDocEditor = forwardRef<
     setBase(next);
     setVerification(verificationFromNode(node));
     setVerifyVersion('');
+    saveStateRef.current = 'idle';
     setSaveState('idle');
     setSaveError(null);
   }, [node.id]);
@@ -108,6 +134,10 @@ export const TechDocEditor = forwardRef<
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  useEffect(() => {
+    onBusyChange?.({ saving: saveState === 'saving', verifying });
+  }, [saveState, verifying, onBusyChange]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -120,6 +150,7 @@ export const TechDocEditor = forwardRef<
   }, [dirty]);
 
   const runSave = async (silent: boolean): Promise<boolean> => {
+    saveStateRef.current = 'saving';
     setSaveState('saving');
     setSaveError(null);
     const payload: BaseDoc = { ...draftRef.current };
@@ -138,12 +169,14 @@ export const TechDocEditor = forwardRef<
       setBase(next);
       setVerification({ version: saved.verifiedVersion ?? '', at: saved.contentVerifiedAt });
       setDraft((current) => (sameDoc(current, payload) ? next : current));
+      saveStateRef.current = 'saved';
       setSaveState('saved');
       if (!silent) push('技术文档已保存');
       onSaved?.(saved);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : '保存失败';
+      saveStateRef.current = 'error';
       setSaveState('error');
       setSaveError(message);
       if (!silent) push(message, 'error');
@@ -152,6 +185,7 @@ export const TechDocEditor = forwardRef<
   };
 
   const save = async (silent = false): Promise<boolean> => {
+    if (discardingRef.current) return false;
     // A save started moments ago (usually autosave) already contains some of
     // the latest keystrokes. Wait for it, then save once more if the draft
     // moved on while the request was in flight. Only one request is ever open.
@@ -162,6 +196,7 @@ export const TechDocEditor = forwardRef<
       return save(silent);
     }
     if (sameDoc(draftRef.current, baseRef.current)) {
+      saveStateRef.current = 'saved';
       setSaveState('saved');
       return true;
     }
@@ -172,13 +207,45 @@ export const TechDocEditor = forwardRef<
     return task;
   };
 
+  const discard = async (): Promise<boolean> => {
+    if (verifyingRef.current) return false;
+    discardingRef.current = true;
+    try {
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+      if (inFlightRef.current) {
+        // The request may contain keystrokes the user still wants. If it
+        // fails, keep the local edits and let the caller decide what to do.
+        const saved = await inFlightRef.current;
+        if (!saved) return false;
+      }
+      const next = { ...baseRef.current };
+      draftRef.current = next;
+      setDraft(next);
+      saveStateRef.current = 'idle';
+      setSaveState('idle');
+      setSaveError(null);
+      return true;
+    } finally {
+      discardingRef.current = false;
+    }
+  };
+
   useImperativeHandle(ref, () => ({
     save,
     isDirty: () => !sameDoc(draftRef.current, baseRef.current),
+    isBusy: () =>
+      saveStateRef.current === 'saving' ||
+      inFlightRef.current !== null ||
+      verifyingRef.current,
+    isVerifying: () => verifyingRef.current,
+    discard,
   }), [dirty]);
 
   const verify = async () => {
-    if (verifying) return;
+    if (verifying || verifyingRef.current) return;
     const current = draftRef.current;
     const version = verifyVersion.trim();
     if (!current.markdown.trim()) {
@@ -189,12 +256,14 @@ export const TechDocEditor = forwardRef<
       push('请填写本次实际验证的版本', 'error');
       return;
     }
+    verifyingRef.current = true;
     setVerifying(true);
     try {
       // Persist pending edits first; Verify must attest to the content the user
       // actually sees, and it never writes the Markdown body itself.
       const saved = await save(true);
       if (!saved) return;
+      saveStateRef.current = 'saving';
       setSaveState('saving');
       setSaveError(null);
       // Capture what was actually verified. If the author keeps typing while
@@ -211,16 +280,19 @@ export const TechDocEditor = forwardRef<
         setDraft((current) => (sameDoc(current, verifiedBase) ? next : current));
         setVerification({ version: verified.verifiedVersion ?? version, at: verified.contentVerifiedAt });
         setVerifyVersion('');
+        saveStateRef.current = 'saved';
         setSaveState('saved');
         onSaved?.(verified);
         push(`文档已验证，当前状态为已完善（${verified.verifiedVersion ?? version}）`);
       } catch (error) {
         const message = error instanceof Error ? error.message : '验证失败';
+        saveStateRef.current = 'error';
         setSaveState('error');
         setSaveError(message);
         push(message, 'error');
       }
     } finally {
+      verifyingRef.current = false;
       setVerifying(false);
     }
   };
@@ -228,11 +300,25 @@ export const TechDocEditor = forwardRef<
   useEffect(() => {
     // Stay on the failure state until the author retries, instead of hammering
     // the API every debounce interval.
-    if (!autoSave || !dirty || saveState === 'saving' || saveState === 'error') return;
-    const timer = window.setTimeout(() => {
+    if (
+      !autoSave ||
+      !dirty ||
+      discardingRef.current ||
+      saveState === 'saving' ||
+      saveState === 'error'
+    ) {
+      return;
+    }
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
       void save(true);
     }, 1400);
-    return () => window.clearTimeout(timer);
+    return () => {
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, dirty, autoSave, saveState]);
 
