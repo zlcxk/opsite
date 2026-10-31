@@ -395,7 +395,7 @@ describe('technology knowledge content', () => {
 
     // Phase B upgrades are actually written into the seeded node rows.
     expect(tech.getNode('k8s-apiserver')!.contentMarkdown).toContain('API Priority and Fairness');
-    expect(tech.getNode('k8s-kubelet')!.contentMarkdown).toContain('Kubernetes 1.34 默认值');
+    expect(tech.getNode('k8s-kubelet')!.contentMarkdown).toContain('Kubernetes 1.37 默认值');
     expect(tech.getNode('k8s-cri')!.contentMarkdown).toContain('RuntimeService');
     expect(tech.getNode('k8s-containerd')!.contentMarkdown).toContain('io.containerd.cri.v1.runtime');
 
@@ -667,6 +667,55 @@ describe('content verification and stale review', () => {
     expect(edited.contentStatus).toBe('draft');
     expect(edited.verifiedVersion).toBe('v2.0');
     expect(edited.contentVerifiedAt).toBe(verified.contentVerifiedAt);
+
+    tech.deleteNode(node.id);
+  });
+
+  it('invalidates Complete when version, official source or reference links change', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const node = tech.createNode(domain.id, { name: '版本身份测试节点', nodeType: 'concept' });
+    tech.updateNode(node.id, {
+      contentMarkdown: '# 内容',
+      applicableVersions: 'Kubernetes 1.35–1.37',
+      docsUrl: 'https://kubernetes.io/docs/',
+      referenceLinks: [{ label: 'Docs', url: 'https://kubernetes.io/docs/' }],
+    });
+    const verified = tech.verifyNodeContent(node.id, { version: 'Kubernetes 1.37.2' });
+
+    const notesOnly = tech.updateNode(node.id, { personalNotes: '只改个人笔记' });
+    expect(notesOnly.contentStatus).toBe('complete');
+    expect(notesOnly.verifiedVersion).toBe('Kubernetes 1.37.2');
+
+    const versionsChanged = tech.updateNode(node.id, {
+      applicableVersions: 'Kubernetes 1.36–1.37',
+    });
+    expect(versionsChanged.contentStatus).toBe('draft');
+    expect(versionsChanged.verifiedVersion).toBe(verified.verifiedVersion);
+    expect(versionsChanged.contentVerifiedAt).toBe(verified.contentVerifiedAt);
+    expect(() =>
+      tech.updateNode(node.id, { contentStatus: 'complete' }),
+    ).toThrow(/验证操作/);
+
+    const reverified = tech.verifyNodeContent(node.id, { version: 'Kubernetes 1.37.2' });
+    expect(reverified.contentStatus).toBe('complete');
+    const docsChanged = tech.updateNode(node.id, {
+      docsUrl: 'https://kubernetes.io/docs/concepts/',
+    });
+    expect(docsChanged.contentStatus).toBe('draft');
+
+    tech.verifyNodeContent(node.id, { version: 'Kubernetes 1.37.2' });
+    const linksChanged = tech.updateNode(node.id, {
+      referenceLinks: [{ label: 'Concepts', url: 'https://kubernetes.io/docs/concepts/' }],
+    });
+    expect(linksChanged.contentStatus).toBe('draft');
+
+    tech.verifyNodeContent(node.id, { version: 'Kubernetes 1.37.2' });
+    const unchanged = tech.updateNode(node.id, {
+      applicableVersions: 'Kubernetes 1.36–1.37',
+      docsUrl: 'https://kubernetes.io/docs/concepts/',
+      referenceLinks: [{ label: 'Concepts', url: 'https://kubernetes.io/docs/concepts/' }],
+    });
+    expect(unchanged.contentStatus).toBe('complete');
 
     tech.deleteNode(node.id);
   });

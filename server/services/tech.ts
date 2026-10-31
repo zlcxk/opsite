@@ -926,7 +926,25 @@ export function updateNode(
       ? input.contentMarkdown!
       : null
     : existing.content_markdown;
+  const nextApplicableVersions = input.applicableVersions !== undefined
+    ? input.applicableVersions?.trim() || null
+    : existing.applicable_versions;
+  const nextDocsUrl = input.docsUrl !== undefined
+    ? input.docsUrl?.trim() || null
+    : existing.docs_url;
+  const nextReferenceLinks = input.referenceLinks?.filter((link) =>
+    /^https?:\/\//i.test(link.url),
+  );
   const markdownChanged = (existing.content_markdown ?? null) !== (nextMarkdown ?? null);
+  const applicableVersionsChanged =
+    (existing.applicable_versions ?? null) !== (nextApplicableVersions ?? null);
+  const docsUrlChanged = (existing.docs_url ?? null) !== (nextDocsUrl ?? null);
+  const referenceLinksChanged =
+    nextReferenceLinks !== undefined &&
+    JSON.stringify(parseLinks(existing.reference_links ?? '')) !==
+      JSON.stringify(nextReferenceLinks);
+  const verificationInputsChanged =
+    markdownChanged || applicableVersionsChanged || docsUrlChanged || referenceLinksChanged;
   let nextContentStatus: TechContentStatus = input.contentStatus ?? existing.content_status;
   if (!hasMarkdownContent(nextMarkdown)) {
     // A node without a document is always "待补充", regardless of what the
@@ -934,10 +952,12 @@ export function updateNode(
     nextContentStatus = 'missing';
   } else if (nextContentStatus === 'missing') {
     nextContentStatus = 'draft';
-  } else if (markdownChanged && existing.content_status === 'complete') {
-    // Editing a verified document invalidates the current verification. Keep
-    // the verification timestamp/version as history, but force the status back
-    // to draft so the new body can never be presented as verified.
+  } else if (verificationInputsChanged && existing.content_status === 'complete') {
+    // Editing anything that the verification claim depends on invalidates the
+    // current verification: the body, the applicable version range, the main
+    // official reference, or the supporting links. Keep the verification
+    // timestamp/version as history, but force the status back to draft so the
+    // new material can never be presented as verified.
     nextContentStatus = 'draft';
   }
   // Verification metadata is only writable through verifyNodeContent. A normal
@@ -945,10 +965,9 @@ export function updateNode(
   const nextVerifiedVersion = existing.verified_version;
   const nextVerifiedAt = existing.content_verified_at;
   const contentChanged =
-    markdownChanged ||
+    verificationInputsChanged ||
     input.contentStatus !== undefined ||
-    input.contentSource !== undefined ||
-    input.applicableVersions !== undefined;
+    input.contentSource !== undefined;
   db.prepare(
     `UPDATE tech_nodes SET
       name = ?, node_type = ?, summary = ?, description = ?, technical_role = ?, core_principle = ?,
@@ -970,21 +989,17 @@ export function updateNode(
     input.keyMechanism !== undefined ? input.keyMechanism?.trim() || null : existing.key_mechanism,
     input.useCases !== undefined ? input.useCases?.trim() || null : existing.use_cases,
     input.commonIssues !== undefined ? input.commonIssues?.trim() || null : existing.common_issues,
-    input.docsUrl !== undefined ? input.docsUrl?.trim() || null : existing.docs_url,
+    nextDocsUrl,
     input.repoUrl !== undefined ? input.repoUrl?.trim() || null : existing.repo_url,
-    input.referenceLinks !== undefined
-      ? JSON.stringify(
-          input.referenceLinks.filter((link) => /^https?:\/\//i.test(link.url)),
-        )
+    nextReferenceLinks !== undefined
+      ? JSON.stringify(nextReferenceLinks)
       : existing.reference_links,
     input.personalNotes !== undefined ? input.personalNotes : existing.personal_notes,
     input.researchQuestions !== undefined ? input.researchQuestions : existing.research_questions,
     nextMarkdown,
     nextContentStatus,
     input.contentSource !== undefined ? input.contentSource : existing.content_source,
-    input.applicableVersions !== undefined
-      ? input.applicableVersions?.trim() || null
-      : existing.applicable_versions,
+    nextApplicableVersions,
     contentChanged ? timestamp : existing.content_updated_at,
     nextVerifiedAt,
     nextVerifiedVersion,

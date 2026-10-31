@@ -1,17 +1,30 @@
+import type { TechExternalLink } from '../../shared/types.js';
 import type { TechContentEntry } from './tech-content.js';
 
 const d = (
   nodeId: string,
   contentMarkdown: string,
-  options: { versions?: string; docsUrl?: string; source?: 'official' | 'mixed' | 'curated' } = {},
+  options: {
+    versions?: string;
+    docsUrl?: string;
+    repoUrl?: string;
+    source?: 'official' | 'mixed' | 'curated';
+    referenceLinks?: TechExternalLink[];
+    version?: number;
+    replacesContentHash?: string;
+  } = {},
 ): TechContentEntry => ({
   nodeId,
-  version: 1,
+  version: options.version ?? 1,
   contentMarkdown,
   contentStatus: 'draft',
   contentSource: options.source ?? 'mixed',
-  applicableVersions: options.versions ?? 'Prometheus 2.45+ / Prometheus Operator 0.70+（除单独标注外）',
+  applicableVersions:
+    options.versions ?? 'Prometheus 3.13 LTS / 3.14 / 3.15（核实基线 3.15.1；2.x 已 EOL）',
   docsUrl: options.docsUrl,
+  repoUrl: options.repoUrl,
+  referenceLinks: options.referenceLinks,
+  replacesContentHash: options.replacesContentHash,
 });
 
 /**
@@ -71,11 +84,29 @@ Prometheus 是一套以拉取（pull）为核心的指标监控系统，包含�
 
 Prometheus Server 是运行载体；TSDB 保存数据；Alertmanager 负责通知；Grafana 负责可视化；Operator 负责 Kubernetes 下的声明式管理。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+本文描述 3.x 的共同架构；2.x 的组件划分和默认行为可能不同，历史部署不能直接照搬 3.x 的结论。
+
 ## 参考资料
 
 - [Prometheus Overview](https://prometheus.io/docs/introduction/overview/)
 - [Prometheus Architecture](https://prometheus.io/docs/introduction/faq/#architecture)`,
-    { docsUrl: 'https://prometheus.io/docs/introduction/overview/' },
+    {
+      docsUrl: 'https://prometheus.io/docs/introduction/overview/',
+      version: 2,
+      replacesContentHash: 'a2c4786f51c7ba6b98134a14ba2fc2d5f8604ab1ebbf275646d1cb820cc85f68',
+    },
   ),
   d(
     'prom-server',
@@ -122,11 +153,29 @@ Prometheus Server 是实际运行的进程，组合抓取管理器、TSDB、查�
 
 TSDB 是存储核心；服务发现提供目标；Alertmanager 接收告警；Grafana 消费查询 API；Operator 管理其生命周期。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+3.x 中命令行参数与运行时配置的边界有调整，旧的 --log.level 参数已标记为弃用，运行期日志级别应使用 runtime.log_level。部署前以 3.15 的 command-line flags 与 configuration 文档核对。
+
 ## 参考资料
 
-- [Prometheus Configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/)
-- [Storage](https://prometheus.io/docs/prometheus/latest/storage/)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/configuration/configuration/' },
+- [Prometheus Configuration](https://prometheus.io/docs/prometheus/3.15/configuration/configuration/)
+- [Storage](https://prometheus.io/docs/prometheus/3.15/storage/)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/configuration/configuration/',
+      version: 2,
+      replacesContentHash: '1f3c2c8da42bcdb59885957d25418eae299e9bcbc16d08356f3dce428fdbed83',
+    },
   ),
   d(
     'prom-tsdb',
@@ -182,10 +231,28 @@ storage:
 
 Prometheus Server 负责读写；Remote Write 把数据送出；Thanos/Mimir 等长期存储接收块或样本；Grafana 通过查询引擎访问。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+TSDB 的块格式和压缩编码随大版本演进；从 2.x 升级前应备份数据目录，并用 promtool tsdb analyze 检查块与标签基数。
+
 ## 参考资料
 
-- [Prometheus Storage](https://prometheus.io/docs/prometheus/latest/storage/)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/storage/' },
+- [Prometheus Storage](https://prometheus.io/docs/prometheus/3.15/storage/)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/storage/',
+      version: 2,
+      replacesContentHash: '87d83ced60246d9d2dca79252b8a15d4fca34425c7b29ba65c1b475a26a1904a',
+    },
   ),
   d(
     'prom-promql',
@@ -244,11 +311,29 @@ histogram_quantile(0.95,
 
 使用表达式浏览器或 /api/v1/query 逐步验证：先看原始序列，再加 rate，再加聚合，最后加告警阈值。不要一次性写完复杂表达式再猜哪里错。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+PromQL 的实验函数和语法开关按版本变化，实验特性不能当作稳定语法；升级前用 promtool check rules 和查询回归用例核对。
+
 ## 参考资料
 
-- [Querying basics](https://prometheus.io/docs/prometheus/latest/querying/basics/)
-- [PromQL functions](https://prometheus.io/docs/prometheus/latest/querying/functions/)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/querying/basics/' },
+- [Querying basics](https://prometheus.io/docs/prometheus/3.15/querying/basics/)
+- [PromQL functions](https://prometheus.io/docs/prometheus/3.15/querying/functions/)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/querying/basics/',
+      version: 2,
+      replacesContentHash: '6109787f58c163b40c8a165fed6671c6d719ec9e29640cd12c69bc46799367cc',
+    },
   ),
   d(
     'prom-data-model',
@@ -297,11 +382,29 @@ Histogram 暴露 \`_bucket\`、\`_sum\`、\`_count\`，可在服务端聚合；S
 - 用 gauge 表达累计值，导致 rate 无意义。
 - 标签值大小写和格式不统一，聚合结果分裂。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+数据模型在 2.x 到 3.x 之间保持兼容，但指标名、标签和样本格式的校验规则可能收紧；跨版本迁移以 3.15 文档为准。
+
 ## 参考资料
 
 - [Data model](https://prometheus.io/docs/concepts/data_model/)
 - [Metric types](https://prometheus.io/docs/concepts/metric_types/)`,
-    { docsUrl: 'https://prometheus.io/docs/concepts/data_model/' },
+    {
+      docsUrl: 'https://prometheus.io/docs/concepts/data_model/',
+      version: 2,
+      replacesContentHash: '2815c601a3a2350294ceef455cd526b992fb35d60a6602983d80141d19d9ad36',
+    },
   ),
   d(
     'prom-service-discovery',
@@ -364,11 +467,29 @@ scrape_configs:
 
 relabel 决定目标去留；scrape_config 定义任务；Kubernetes SD 依赖 apiserver；file_sd 依赖文件更新。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+服务发现配置在 3.x 基本兼容，但部分字段的默认值和校验规则会随版本变化；升级前用 promtool check config 校验。
+
 ## 参考资料
 
-- [Service discovery](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config)
-- [Kubernetes SD](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#kubernetes_sd_config)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/configuration/configuration/#kubernetes_sd_config' },
+- [Service discovery](https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#scrape_config)
+- [Kubernetes SD](https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#kubernetes_sd_config)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#kubernetes_sd_config',
+      version: 2,
+      replacesContentHash: '576e5ef0181638f7430ad10f08bd419b3aa9b0e6a0f38dd04cc898c85d42a57b',
+    },
   ),
   d(
     'prom-scraping',
@@ -436,11 +557,29 @@ scrape_configs:
 
 在 Prometheus UI 的 Status → Targets 查看每个目标的健康状态、最近错误和抓取耗时；用 \`up{job="..."}\` 和 \`scrape_duration_seconds\` 建立监控。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+抓取配置在 3.x 基本兼容，但默认值、协议选项和校验规则会随版本变化；升级前用 promtool check config 校验。
+
 ## 参考资料
 
-- [Configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config)
+- [Configuration](https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#scrape_config)
 - [Instrumentation](https://prometheus.io/docs/practices/instrumentation/)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/configuration/configuration/#scrape_config' },
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#scrape_config',
+      version: 2,
+      replacesContentHash: 'c75a4b518fb5dc8e10de59d5709779ddb38066b369fc6b24a056703d3a17e0fd',
+    },
   ),
   d(
     'prom-relabel',
@@ -505,10 +644,28 @@ relabel_configs:
 
 Prometheus UI 的 Targets 页面可以展开目标的 final labels 和 discovered labels，直接看到 relabel 前后的差异。用 \`promtool check config\` 校验语法。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+relabel 的 action 集合在 3.x 基本稳定，但字段校验更严格；跨版本复制配置前先确认所用版本的 action 和默认值。
+
 ## 参考资料
 
-- [relabel_config](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config' },
+- [relabel_config](https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#relabel_config)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#relabel_config',
+      version: 2,
+      replacesContentHash: '260137cb51ba99b1873a6354f2976d26137e7bef5e3fde7d07b38d0da1847e48',
+    },
   ),
   d(
     'prom-exporter',
@@ -571,11 +728,29 @@ scrape_configs:
 - 指标命名不符合规范，难以聚合。
 - 多实例 Exporter 使用相同标签，导致序列冲突。
 
+## 版本差异与兼容性
+
+Exporter 和 kube-state-metrics 独立于 Prometheus Server 发布，版本号不能互相推断。本文以 Node Exporter 1.x、blackbox_exporter 0.2x、kube-state-metrics 2.x 作为当前主线参照；具体维护周期和弃用项以各项目 Release Notes 为准。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Server | 3.13 LTS / 3.14 / 3.15 | 只决定抓取和查询能力，不决定 Exporter 版本 |
+| Node Exporter | 1.x | 采集器开关和默认端口随版本变化，升级前核对 flags |
+| blackbox_exporter | 0.2x | 模块配置独立演进，Probe 资源需与模块名匹配 |
+| kube-state-metrics | 2.x | 指标名和标签可能随 Kubernetes 版本调整，升级前核对指标清单 |
+
+不要用一个项目的 EOL 日期推断另一个项目；采集端升级后应重新检查指标基数、标签和告警规则。
+
 ## 参考资料
 
 - [Exporters and integrations](https://prometheus.io/docs/instrumenting/exporters/)
 - [Writing exporters](https://prometheus.io/docs/instrumenting/writing_exporters/)`,
-    { docsUrl: 'https://prometheus.io/docs/instrumenting/exporters/' },
+    {
+      docsUrl: 'https://prometheus.io/docs/instrumenting/exporters/',
+      versions: 'Node Exporter 1.x / blackbox_exporter 0.2x / kube-state-metrics 2.x（各自独立发布）',
+      version: 2,
+      replacesContentHash: '85b57da44a2eea3afab2981e1d917e8663b2dd410494f0895cb5cf4fbc397cbb',
+    },
   ),
   d(
     'prom-operator',
@@ -653,11 +828,29 @@ kubectl -n monitoring logs deploy/prometheus-operator
 
 Prometheus CR 是实例声明；ServiceMonitor/PodMonitor 是抓取声明；PrometheusRule 是规则声明；config-reloader 负责重载。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
 ## 参考资料
 
 - [Prometheus Operator](https://prometheus-operator.dev/)
 - [API reference](https://prometheus-operator.dev/docs/api-reference/api/)`,
-    { docsUrl: 'https://prometheus-operator.dev/' },
+    {
+      docsUrl: 'https://prometheus-operator.dev/',
+      versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
+      version: 2,
+      replacesContentHash: '736553cfd5271b35d229311e903891c226f555cf8af0e406462eb082c03ef016',
+    },
   ),
   d(
     'prom-cr',
@@ -730,10 +923,28 @@ spec:
 
 ServiceMonitor/PodMonitor/Probe/ScrapeConfig 提供抓取目标；PrometheusRule 提供规则；Alertmanager CR 提供告警接收端；config-reloader 负责重载。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
 ## 参考资料
 
 - [Prometheus CRD](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.Prometheus)`,
-    { docsUrl: 'https://prometheus-operator.dev/docs/api-reference/api/' },
+    {
+      docsUrl: 'https://prometheus-operator.dev/docs/api-reference/api/',
+      versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
+      version: 2,
+      replacesContentHash: '19794ccc112199bacf068cd92992c1620b2a84875a1362c8a0dcfa7a815f866f',
+    },
   ),
   d(
     'prom-service-monitor',
@@ -795,10 +1006,28 @@ spec:
 
 Service 定义端点；Endpoints/EndpointSlice 提供实际地址；Prometheus CR 决定是否纳入；PodMonitor 用于无 Service 的场景。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
 ## 参考资料
 
 - [ServiceMonitor](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.ServiceMonitor)`,
-    { docsUrl: 'https://prometheus-operator.dev/docs/operator/api/' },
+    {
+      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
+      version: 2,
+      replacesContentHash: '8579ca855eaf15159ff7f7387681df4facbb3bea79c9ad436472f7bbad8fdca0',
+    },
   ),
   d(
     'prom-pod-monitor',
@@ -857,10 +1086,28 @@ spec:
 
 Pod 提供目标；Prometheus CR 决定纳入；ServiceMonitor 更适合有 Service 的应用；relabel 控制最终标签。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
 ## 参考资料
 
 - [PodMonitor](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.PodMonitor)`,
-    { docsUrl: 'https://prometheus-operator.dev/docs/operator/api/' },
+    {
+      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
+      version: 2,
+      replacesContentHash: 'e4dfbb9257ee88626fc5c7f0156093e54ddd710c55b6aa719b9c54a634d3cfe3',
+    },
   ),
   d(
     'prom-scrape-config-cr',
@@ -916,10 +1163,28 @@ spec:
 
 Prometheus CR 决定纳入；relabel 处理标签；原生 scrape_configs 是最终形态；ServiceMonitor/PodMonitor 是更上层的封装。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
 ## 参考资料
 
 - [ScrapeConfig](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1alpha1.ScrapeConfig)`,
-    { docsUrl: 'https://prometheus-operator.dev/docs/operator/api/' },
+    {
+      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
+      version: 2,
+      replacesContentHash: 'a60e9ad6920e2c966cc5f5811a48a7cf5eef340b28ef81311c0afaf991d3b8a9',
+    },
   ),
   d(
     'prom-probe',
@@ -977,11 +1242,31 @@ spec:
 
 Blackbox Exporter 执行探测；Prometheus CR 的 probeSelector 决定纳入；ServiceMonitor/PodMonitor 用于抓取应用自身指标。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
+Probe 资源由 Operator 管理，blackbox_exporter 独立发布；Probe 的模块名必须与 blackbox_exporter 配置一致，两者升级要分开验证。
+
 ## 参考资料
 
 - [Probe](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.Probe)
 - [Blackbox Exporter](https://github.com/prometheus/blackbox_exporter)`,
-    { docsUrl: 'https://github.com/prometheus/blackbox_exporter' },
+    {
+      docsUrl: 'https://github.com/prometheus/blackbox_exporter',
+      versions: 'Prometheus Operator 0.94.x（Probe CRD，核实基线 0.94.2）；blackbox_exporter 版本独立',
+      version: 2,
+      replacesContentHash: '20402c65d0640e5c18bfc605a24f40e9b4d684d6cf34299caa94909766f461b6',
+    },
   ),
   d(
     'prom-rule-cr',
@@ -1050,11 +1335,31 @@ spec:
 
 Prometheus CR 决定规则纳入；Alertmanager 接收告警；Recording Rules 生成新序列；PromQL 是表达式语言。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
+PrometheusRule 的 validation 和 ruleFormat 行为随 Operator 版本变化；升级后应重新检查规则选择器和生成配置。
+
 ## 参考资料
 
 - [PrometheusRule](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.PrometheusRule)
-- [Alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/' },
+- [Alerting rules](https://prometheus.io/docs/prometheus/3.15/configuration/alerting_rules/)`,
+    {
+      docsUrl: 'https://prometheus-operator.dev/docs/operator/api/',
+      versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；兼容 Prometheus 2.0+，e2e 主要覆盖 3.14',
+      version: 2,
+      replacesContentHash: '209ea3d7522b49dc1d208dbc6f00efdef51d6951506036a3f294a4b42c9b4d81',
+    },
   ),
   d(
     'prom-generated-config',
@@ -1101,10 +1406,30 @@ kubectl -n monitoring logs <prometheus-pod> -c prometheus
 
 Prometheus Operator 生成配置；config-reloader 触发热重载；Prometheus Server 校验并加载；ServiceMonitor/PodMonitor/PrometheusRule 是输入。
 
+## 版本差异与兼容性
+
+本文以 Prometheus Operator 0.94.2 为核实基线。Operator 与 Prometheus Server 独立发布：Operator 支持 Prometheus 2.0 及以上，端到端测试主要覆盖 3.14；不能因为 Prometheus 升到 3.15 就假定 Operator 必须同版本，也不能用 Prometheus 的 LTS 推断 Operator 的维护周期。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Operator | 0.94.x（核实基线 0.94.2） | CRD、控制器行为和生成配置以该版本为准 |
+| Kubernetes | Operator 0.84 及以上要求 1.25 及以上 | CRD 使用 CEL，旧集群升级前先核对 |
+| Prometheus Server | 2.0 及以上，e2e 主要覆盖 3.14 | Server 升级与 Operator 升级分开验证 |
+| kube-prometheus-stack | 独立 Chart 版本 | 不能把 Chart 版本当成 Operator 或 Prometheus 版本 |
+
+CRD 与控制器必须匹配：先升级 CRD，再升级 Operator，最后调整 Prometheus 实例；跨多个次版本升级时逐段核对官方迁移说明。
+
+生成的 Prometheus 配置是 Operator 的输出，不是稳定的公共 API；不同 Operator 版本可能改变字段顺序、默认值和 Secret 结构，排障时以当前版本生成结果为准。
+
 ## 参考资料
 
 - [Prometheus Operator config](https://prometheus-operator.dev/docs/platform/troubleshooting/)`,
-    { docsUrl: 'https://prometheus-operator.dev/docs/platform/troubleshooting/' },
+    {
+      docsUrl: 'https://prometheus-operator.dev/docs/platform/troubleshooting/',
+      versions: 'Prometheus Operator 0.94.x（核实基线 0.94.2）；生成配置随 Operator 版本变化',
+      version: 2,
+      replacesContentHash: '1e453996010f7daa1c2da98f5e01783f3b68bb63bc2033d6f1cfce02397af563',
+    },
   ),
   d(
     'prom-alertmanager',
@@ -1169,11 +1494,28 @@ inhibit_rules:
 
 访问 Alertmanager UI 查看告警、静默和通知状态；检查 \`/-/ready\` 和集群状态；查看日志中的通知失败原因；用 \`amtool check-config\` 校验配置。
 
+## 版本差异与兼容性
+
+本文以 Alertmanager 0.34.x 为核实基线（Operator 端到端测试基线为 0.34.0）。Alertmanager 与 Prometheus Server 独立发布，Prometheus 3.15 不要求 Alertmanager 同版本；告警的发送与接收能力以双方共同支持的协议和配置为准。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Alertmanager | 0.34.x（核实基线 0.34.0） | 配置、路由和 API 行为以该版本为准 |
+| Prometheus Server | 3.13 LTS / 3.14 / 3.15 | 只负责发送告警，不与 Alertmanager 共享版本号 |
+| 通知集成 | 由各集成自身维护 | 升级 Alertmanager 前核对 webhook、邮件和 Chat 集成的字段变化 |
+
+不能把 Prometheus 的 LTS 或 EOL 直接套到 Alertmanager；迁移配置时逐项核对 silence、inhibit 和 route 的字段语义。
+
 ## 参考资料
 
-- [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/)
-- [Configuration](https://prometheus.io/docs/alerting/latest/configuration/)`,
-    { docsUrl: 'https://prometheus.io/docs/alerting/latest/alertmanager/' },
+- [Alertmanager](https://prometheus.io/docs/alerting/0.34/alertmanager/)
+- [Configuration](https://prometheus.io/docs/alerting/0.34/configuration/)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/alerting/0.34/alertmanager/',
+      versions: 'Alertmanager 0.34.x（核实基线 0.34.0）；与 Prometheus Server 版本独立',
+      version: 2,
+      replacesContentHash: 'e5b89b15f26e1d5da15b0a9b4121bdeb1d730b723d8aa485bb570fbaef4d8604',
+    },
   ),
   d(
     'prom-am-config',
@@ -1244,10 +1586,27 @@ receivers:
 
 使用 \`amtool check-config alertmanager.yml\` 校验；在 UI 中用 routing 测试功能模拟标签；观察 Silences 和 Notifications 页面。
 
+## 版本差异与兼容性
+
+本文以 Alertmanager 0.34.x 为核实基线（Operator 端到端测试基线为 0.34.0）。Alertmanager 与 Prometheus Server 独立发布，Prometheus 3.15 不要求 Alertmanager 同版本；告警的发送与接收能力以双方共同支持的协议和配置为准。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Alertmanager | 0.34.x（核实基线 0.34.0） | 配置、路由和 API 行为以该版本为准 |
+| Prometheus Server | 3.13 LTS / 3.14 / 3.15 | 只负责发送告警，不与 Alertmanager 共享版本号 |
+| 通知集成 | 由各集成自身维护 | 升级 Alertmanager 前核对 webhook、邮件和 Chat 集成的字段变化 |
+
+不能把 Prometheus 的 LTS 或 EOL 直接套到 Alertmanager；迁移配置时逐项核对 silence、inhibit 和 route 的字段语义。
+
 ## 参考资料
 
-- [Alertmanager configuration](https://prometheus.io/docs/alerting/latest/configuration/)`,
-    { docsUrl: 'https://prometheus.io/docs/alerting/latest/configuration/' },
+- [Alertmanager configuration](https://prometheus.io/docs/alerting/0.34/configuration/)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/alerting/0.34/configuration/',
+      versions: 'Alertmanager 0.34.x（核实基线 0.34.0）；与 Prometheus Server 版本独立',
+      version: 2,
+      replacesContentHash: 'ba8ad14554e88d3683dee87322d8615b1b6d5c0eb9a29ef4a6509179f6bdb2b8',
+    },
   ),
   d(
     'prom-alert-routing',
@@ -1309,10 +1668,27 @@ route:
 
 分组决定“合并多少”，路由决定“发给谁”，抑制决定“哪些不发”，静默决定“暂时不发”。
 
+## 版本差异与兼容性
+
+本文以 Alertmanager 0.34.x 为核实基线（Operator 端到端测试基线为 0.34.0）。Alertmanager 与 Prometheus Server 独立发布，Prometheus 3.15 不要求 Alertmanager 同版本；告警的发送与接收能力以双方共同支持的协议和配置为准。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Alertmanager | 0.34.x（核实基线 0.34.0） | 配置、路由和 API 行为以该版本为准 |
+| Prometheus Server | 3.13 LTS / 3.14 / 3.15 | 只负责发送告警，不与 Alertmanager 共享版本号 |
+| 通知集成 | 由各集成自身维护 | 升级 Alertmanager 前核对 webhook、邮件和 Chat 集成的字段变化 |
+
+不能把 Prometheus 的 LTS 或 EOL 直接套到 Alertmanager；迁移配置时逐项核对 silence、inhibit 和 route 的字段语义。
+
 ## 参考资料
 
-- [Alertmanager routing](https://prometheus.io/docs/alerting/latest/configuration/#route)`,
-    { docsUrl: 'https://prometheus.io/docs/alerting/latest/configuration/#route' },
+- [Alertmanager routing](https://prometheus.io/docs/alerting/0.34/configuration/#route)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/alerting/0.34/configuration/#route',
+      versions: 'Alertmanager 0.34.x（核实基线 0.34.0）；与 Prometheus Server 版本独立',
+      version: 2,
+      replacesContentHash: '127bd0a3ab071fb9d1b09667ae52410baacacaf184445a8ad8f2ff0d9a7dce6b',
+    },
   ),
   d(
     'prom-remote-write',
@@ -1372,11 +1748,29 @@ remote_write:
 
 TSDB 提供样本；WAL 是传输来源；Thanos/Mimir/VictoriaMetrics 是常见接收端；Remote Read 用于查询历史数据。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+Remote Write 的协议版本与接收端能力独立于 Prometheus Server 版本；1.0 和 2.0 协议需要双方共同支持，不能只按 Prometheus 版本判断。
+
 ## 参考资料
 
-- [Remote write](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#remote_write)
+- [Remote write](https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#remote_write)
 - [Remote write tuning](https://prometheus.io/docs/practices/remote_write/)`,
-    { docsUrl: 'https://prometheus.io/docs/practices/remote_write/' },
+    {
+      docsUrl: 'https://prometheus.io/docs/practices/remote_write/',
+      version: 2,
+      replacesContentHash: 'bdb26a79934b8cba9080b26df3d37c892567dd3dfd21dd77c8fbb5871686944f',
+    },
   ),
   d(
     'prom-federation',
@@ -1431,10 +1825,28 @@ scrape_configs:
 
 Prometheus Server 提供 /federate；relabel 控制标签；Remote Write 更适合长期集中存储；Thanos Query 提供全局查询。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+联邦接口在 3.x 保持兼容；下游 Prometheus 的版本决定其可解析的指标和告警格式。
+
 ## 参考资料
 
-- [Federation](https://prometheus.io/docs/prometheus/latest/federation/)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/federation/' },
+- [Federation](https://prometheus.io/docs/prometheus/3.15/federation/)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/federation/',
+      version: 2,
+      replacesContentHash: 'c433f9c840db49414f09446c98584791472ed9297cabb4f51d5857daf9e07b9b',
+    },
   ),
   d(
     'prom-scale',
@@ -1483,12 +1895,30 @@ Prometheus Server 提供 /federate；relabel 控制标签；Remote Write 更适�
 
 Remote Write 是数据出口；Thanos/Mimir/VictoriaMetrics 是接收和查询层；Grafana 连接全局查询端点；Prometheus HA 提供本地冗余。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+扩展组件的版本与 Prometheus Server 独立；Thanos、Mimir、VictoriaMetrics 各自维护周期不同，不能互相推断。
+
 ## 参考资料
 
 - [Thanos](https://thanos.io/)
 - [Grafana Mimir](https://grafana.com/oss/mimir/)
 - [VictoriaMetrics](https://victoriametrics.com/)`,
-    { docsUrl: 'https://thanos.io/' },
+    {
+      docsUrl: 'https://thanos.io/',
+      version: 2,
+      replacesContentHash: 'fc8cd38d675fbb2e8f92a66d44b7ebff9ccf885810328497db7750bae97c0f6f',
+    },
   ),
   d(
     'prom-thanos',
@@ -1546,10 +1976,27 @@ config:
 
 Prometheus 产生块；Remote Write 是另一种数据入口；Query 对接 Grafana；Ruler 连接 Alertmanager。
 
+## 版本差异与兼容性
+
+本文以 Thanos 0.42.x 为核实基线（Prometheus Operator 端到端测试基线为 0.42.5）。Thanos 与 Prometheus Server 独立发布；Operator 兼容 Thanos 0.10 及以上，但对象存储格式、查询 API 和降采样行为要以所用 Thanos 版本的文档为准。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Thanos | 0.42.x（核实基线 0.42.5） | Sidecar、Store Gateway、Query 和 Compactor 的行为以该版本为准 |
+| Prometheus Server | 3.13 LTS / 3.14 / 3.15 | 通过 remote write 或 sidecar 对接，版本可独立升级 |
+| 对象存储 | 由部署环境决定 | 升级 Thanos 前确认存储布局和降采样兼容性 |
+
+Thanos 的维护周期不能由 Prometheus 的 LTS 推断；跨版本升级 Compactor 前先备份并核对块格式。
+
 ## 参考资料
 
 - [Thanos 文档](https://thanos.io/tip/thanos/getting-started.md/)`,
-    { docsUrl: 'https://thanos.io/' },
+    {
+      docsUrl: 'https://thanos.io/',
+      versions: 'Thanos 0.42.x（核实基线 0.42.5）；与 Prometheus Server 版本独立',
+      version: 2,
+      replacesContentHash: 'b2c0b83f5707cc37fd807b523c4f37733461e7ae7913d07387721d89b47869c9',
+    },
   ),
   d(
     'prom-ha',
@@ -1597,11 +2044,29 @@ Prometheus 高可用通过多副本抓取相同目标、查询层去重，以及
 - 副本共享存储，失去冗余意义。
 - 配置漂移导致两个副本抓取不同目标。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+HA 副本之间应使用一致的 Prometheus 版本；混跑不同版本会增加去重和 external_labels 行为差异。
+
 ## 参考资料
 
 - [High availability](https://prometheus.io/docs/introduction/faq/#can-prometheus-be-made-highly-available)
-- [Alertmanager clustering](https://prometheus.io/docs/alerting/latest/alertmanager/#high-availability)`,
-    { docsUrl: 'https://prometheus.io/docs/introduction/faq/#can-prometheus-be-made-highly-available' },
+- [Alertmanager clustering](https://prometheus.io/docs/alerting/0.34/alertmanager/#high-availability)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/introduction/faq/#can-prometheus-be-made-highly-available',
+      version: 2,
+      replacesContentHash: 'ae22864286eca46e98377b10e06142dc5f0c190cd4a2457bd8ebe6681147babe',
+    },
   ),
   d(
     'prom-backup',
@@ -1655,11 +2120,29 @@ tar czf prometheus-snapshot.tar.gz -C /prometheus/snapshots <name>
 - 恢复后 retention 设置错误，历史数据被立即删除。
 - 忽略 Alertmanager 静默和通知状态。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+快照 API 在 3.x 保持可用；恢复目标版本应与生成快照的版本兼容，跨大版本恢复前先验证。
+
 ## 参考资料
 
-- [Snapshot API](https://prometheus.io/docs/prometheus/latest/querying/api/#snapshot)
-- [Storage](https://prometheus.io/docs/prometheus/latest/storage/)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/querying/api/#snapshot' },
+- [Snapshot API](https://prometheus.io/docs/prometheus/3.15/querying/api/#snapshot)
+- [Storage](https://prometheus.io/docs/prometheus/3.15/storage/)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/querying/api/#snapshot',
+      version: 2,
+      replacesContentHash: '6f976a0fda434d4ec0d49caf82ed9b8b333651aca4482f2de2fe1051e2631e12',
+    },
   ),
   d(
     'prom-kubernetes-sd',
@@ -1712,10 +2195,28 @@ scrape_configs:
 
 relabel 处理目标和标签；scrape_config 定义任务；ServiceMonitor/PodMonitor 是 Operator 层的封装；kube-state-metrics 提供对象状态指标。
 
+## 版本差异与兼容性
+
+本文以 Prometheus 3.15.1 为核实基线，主线覆盖仍受上游支持的 3.13 LTS、3.14 和 3.15；Prometheus 2.x 已 EOL，不再作为新部署参考。LTS 表示上游维护周期，不等同于功能冻结或“生产稳定”保证。
+
+| 版本线 | 维护状态 | 对本文的影响 |
+| --- | --- | --- |
+| 3.13 | LTS，支持至 2027-07-31 | 需要长期维护时，先核对 3.13 与 3.15 的配置和查询差异 |
+| 3.14 / 3.15 | 当前主线 | 3.15.1 是本文核实基线；新特性先确认是否已在所用版本启用 |
+| 2.x | EOL | 不能把 2.x 的默认值、配置或 API 行为直接套用到 3.x |
+
+版本差异按语法、默认值、API 行为和存储格式四类核对；无法从官方文档确认的行为保留待核实说明，不用其他项目的维护周期推断 Prometheus。
+
+Kubernetes 服务发现的字段随 Kubernetes 和 Prometheus 版本共同变化；升级任一侧前都要核对角色、标签和 RBAC。
+
 ## 参考资料
 
-- [Kubernetes SD configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#kubernetes_sd_config)`,
-    { docsUrl: 'https://prometheus.io/docs/prometheus/latest/configuration/configuration/#kubernetes_sd_config' },
+- [Kubernetes SD configuration](https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#kubernetes_sd_config)`,
+    {
+      docsUrl: 'https://prometheus.io/docs/prometheus/3.15/configuration/configuration/#kubernetes_sd_config',
+      version: 2,
+      replacesContentHash: '1523628940dee51450a0daee24bd2b07eddd3218fc743ffab991a37d987b9bbd',
+    },
   ),
   d(
     'prom-node-exporter',
@@ -1802,10 +2303,28 @@ spec:
 
 Prometheus 抓取 node-exporter；kube-state-metrics 提供对象状态；Grafana 使用节点指标构建资源看板。
 
+## 版本差异与兼容性
+
+Exporter 和 kube-state-metrics 独立于 Prometheus Server 发布，版本号不能互相推断。本文以 Node Exporter 1.x、blackbox_exporter 0.2x、kube-state-metrics 2.x 作为当前主线参照；具体维护周期和弃用项以各项目 Release Notes 为准。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Server | 3.13 LTS / 3.14 / 3.15 | 只决定抓取和查询能力，不决定 Exporter 版本 |
+| Node Exporter | 1.x | 采集器开关和默认端口随版本变化，升级前核对 flags |
+| blackbox_exporter | 0.2x | 模块配置独立演进，Probe 资源需与模块名匹配 |
+| kube-state-metrics | 2.x | 指标名和标签可能随 Kubernetes 版本调整，升级前核对指标清单 |
+
+不要用一个项目的 EOL 日期推断另一个项目；采集端升级后应重新检查指标基数、标签和告警规则。
+
 ## 参考资料
 
 - [node_exporter](https://github.com/prometheus/node_exporter)`,
-    { docsUrl: 'https://github.com/prometheus/node_exporter' },
+    {
+      docsUrl: 'https://github.com/prometheus/node_exporter',
+      versions: 'Node Exporter 1.x（独立于 Prometheus Server 版本）',
+      version: 2,
+      replacesContentHash: 'd66fb3ad493d5c314141bfd5e951818a1b07addc87d899f6b28a2656d7d24c0d',
+    },
   ),
   d(
     'prom-kube-state-metrics',
@@ -1871,9 +2390,27 @@ spec:
 
 apiserver 提供对象数据；Prometheus 抓取指标；metrics-server 提供资源使用率；Grafana 构建工作负载看板。
 
+## 版本差异与兼容性
+
+Exporter 和 kube-state-metrics 独立于 Prometheus Server 发布，版本号不能互相推断。本文以 Node Exporter 1.x、blackbox_exporter 0.2x、kube-state-metrics 2.x 作为当前主线参照；具体维护周期和弃用项以各项目 Release Notes 为准。
+
+| 组件 | 版本边界 | 对本文的影响 |
+| --- | --- | --- |
+| Prometheus Server | 3.13 LTS / 3.14 / 3.15 | 只决定抓取和查询能力，不决定 Exporter 版本 |
+| Node Exporter | 1.x | 采集器开关和默认端口随版本变化，升级前核对 flags |
+| blackbox_exporter | 0.2x | 模块配置独立演进，Probe 资源需与模块名匹配 |
+| kube-state-metrics | 2.x | 指标名和标签可能随 Kubernetes 版本调整，升级前核对指标清单 |
+
+不要用一个项目的 EOL 日期推断另一个项目；采集端升级后应重新检查指标基数、标签和告警规则。
+
 ## 参考资料
 
 - [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics)`,
-    { docsUrl: 'https://github.com/kubernetes/kube-state-metrics' },
+    {
+      docsUrl: 'https://github.com/kubernetes/kube-state-metrics',
+      versions: 'kube-state-metrics 2.x（独立于 Prometheus Server 版本）',
+      version: 2,
+      replacesContentHash: 'b0306b9b031f4cc237fef371ea9306500d7cc221069849c39bddba9393e6621e',
+    },
   ),
 ];

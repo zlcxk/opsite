@@ -110,7 +110,7 @@ apiserver 把“状态存储”和“状态访问”分开：etcd 只负责持�
 
 resourceVersion 是理解读行为的关键：
 
-- **不设置 resourceVersion**：请求“最新”数据。语义上要求一致读；在 Kubernetes 1.34 中，当 etcd 为 3.4.31+ 或 3.5.13+ 时，apiserver 可以通过 watch cache 加 progress notification 提供该语义，而不必每次直读 etcd。1.31 起该能力默认启用。
+- **不设置 resourceVersion**：请求“最新”数据。语义上要求一致读；在 Kubernetes 1.34 及以后（包括本文覆盖的 1.35–1.37）中，当 etcd 为 3.4.31+ 或 3.5.13+ 时，apiserver 可以通过 watch cache 加 progress notification 提供该语义，而不必每次直读 etcd。1.31 起该能力默认启用。
 - **resourceVersion=0**：表示“任意版本”，总是由 watch cache 返回，可能比客户端已见过的版本更旧；适合先 list 再 watch 的场景，不适合强一致读取。
 - **指定具体 resourceVersion**：要求精确版本；若该版本已被压缩，返回 410 Gone，客户端必须重新 list。
 - **resourceVersionMatch=NotOlderThan**：list 时常用的折中，保证结果不旧于给定版本，同时允许使用缓存。
@@ -132,6 +132,21 @@ apiserver 用 API Priority and Fairness（APF）隔离不同客户端。APF 自 
 其他关键配置包括 \`--etcd-servers\`、\`--etcd-prefix\`（默认 \`/registry\`）、\`--authorization-mode\`、\`--enable-admission-plugins\`、\`--audit-policy-file\`、\`--encryption-provider-config\` 和 \`--watch-cache\`。审计策略决定记录哪些请求和响应体；静态加密让 etcd 中保存的是密文，但密钥管理仍在集群外。
 
 生产环境通常部署 3 个或更多 apiserver 副本，放在负载均衡之后，共享同一组 etcd。副本无 leader，扩容可以提升读与请求处理能力，但不能替代 etcd 的法定人数。apiserver 的 watch cache 是每副本本地的，滚动重启会让缓存重新建立，期间 etcd 读压力会上升。
+
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 为核实基线，正文覆盖仍受上游支持的 1.35–1.37。Kubernetes 1.34 已于 2026-10-27 EOL，仅作为历史差异出现，不再作为生产默认参考。
+
+| 版本 | 机制 | 状态 | 差异与影响 |
+| --- | --- | --- | --- |
+| 1.29 | API Priority and Fairness | Stable | 默认启用；1.35–1.37 沿用该语义 |
+| 1.32 | CBOR 服务与存储 | Alpha | 默认关闭，不能把 CBOR 当作通用 API 编码前提 |
+| 1.34 | AuthorizeWithSelectors | Stable | 授权器可使用字段选择器；不改变 401/403 的区分 |
+| 1.35 | WatchListClient | Beta | 客户端可请求流式初始状态；服务端需支持 WatchList，否则回退到 list |
+| 1.37 | WatchCacheInitializationPostStartHook | Stable | watch cache 初始化改为 post-start hook，属于启动流程细节，不改变 resourceVersion 语义 |
+| 1.35–1.37 | Most recent 读 | 稳定行为 | 在 etcd 3.4.31+/3.5.13+ 时仍可由 watch cache 加 progress notification 提供；\`resourceVersion=0\` 仍是 Any |
+
+apiserver 的 etcd 兼容性由 Kubernetes 版本决定，而不是由 apiserver 自己选择：kubeadm 1.35、1.36、1.37 默认安装 etcd 3.6.6、3.6.8、3.7.0，外部 etcd 最低均为 3.5.24。不要把 etcd 最新 Patch 直接当成 kubeadm 默认组合。
 
 ## 常见问题与限制
 
@@ -158,10 +173,10 @@ kube-scheduler 通过 apiserver 读取未绑定 Pod、写入 Binding；kube-cont
 - [kube-apiserver reference](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/)
 - [API Server Bypass Risks](https://kubernetes.io/docs/concepts/security/api-server-bypass-risks/)`,
     {
-      versions: 'Kubernetes 1.28+；APF 1.29 Stable；watch cache 提供 Most recent 读自 1.31 起默认',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2；1.34 已于 2026-10-27 EOL）',
       docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kube-apiserver',
-      version: 2,
-      replacesContentHash: '81c6092c321002cfe808bdd6eff1d7c44a99a276e312d64bf82d96d1939c775b',
+      version: 3,
+      replacesContentHash: '03c744af826696692600c39f92048e93e71a3c3a04809adb6922ec878615f619',
       referenceLinks: [
         {
           label: 'Kubernetes API Concepts',
@@ -196,7 +211,7 @@ etcd 是 Kubernetes 的持久化后端，保存所有 API 对象的权威副本�
 
 ### 版本与兼容性
 
-etcd 版本必须跟随所用 Kubernetes 版本，而不是直接采用 etcd 最新版。以 kubeadm 的版本映射为例：kubeadm 1.34 默认安装 etcd 3.6.5，支持的外部 etcd 最低版本为 3.5.24；kubeadm 1.31–1.33 默认仍为 3.5.24。Kubernetes 运维文档中“生产环境最低建议 3.4.29+/3.5.11+”是通用下限，不等同于某个 Kubernetes 版本受支持的组合。
+etcd 版本必须跟随所用 Kubernetes 版本，而不是直接采用 etcd 最新版。以 kubeadm 的版本映射为例：kubeadm 1.35、1.36、1.37 默认安装 etcd 3.6.6、3.6.8、3.7.0，支持的外部 etcd 最低版本均为 3.5.24。kubeadm 1.34 默认 3.6.5，但 1.34 已于 2026-10-27 EOL。Kubernetes 运维文档中“生产环境最低建议 3.4.29+/3.5.11+”是通用下限，不等同于某个 Kubernetes 版本受支持的组合。
 
 升级前应查阅对应 Kubernetes 版本的 kubeadm 常量、发布说明和 etcd 升级文档，确认目标版本、数据目录格式和回滚路径。跨多个 minor 直接升级、混用不同 etcd 版本、或在未备份时替换成员，都会放大恢复难度。
 
@@ -268,6 +283,18 @@ etcdutl snapshot restore /backup/etcd.db \\
 
 在多数派丢失时，不要随意使用强制新建集群的方式“修复”，这会产生分叉数据。优先从经过验证的快照恢复，并确认所有成员使用相同的集群配置和 token。
 
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 与 etcd 3.7.x 为核实基线，正文覆盖仍受上游支持的 Kubernetes 1.35–1.37。Kubernetes 1.34 已于 2026-10-27 EOL。
+
+| Kubernetes | kubeadm 默认 etcd | 外部 etcd 最低版本 | 说明 |
+| --- | --- | --- | --- |
+| 1.35 | 3.6.6 | 3.5.24 | 1.35 的默认 Patch 来自 kubeadm 常量，不是 etcd 上游最新版 |
+| 1.36 | 3.6.8 | 3.5.24 | 仍使用 3.6 分支 |
+| 1.37 | 3.7.0 | 3.5.24 | 默认切到 3.7；外部 etcd 下限没有同步提高 |
+
+上游 etcd 在 2026-10-22 仍发布了 3.5.35、3.6.16、3.7.3 三个分支的 Patch，但“上游仍在维护”不等于“当前 kubeadm 推荐组合”。生产选型应先看所用 Kubernetes 版本的 kubeadm 常量与兼容矩阵，再看 etcd 自身的升级路径。etcd 3.7 的维护命令仍以 \`etcdutl\` 为准；不要把 3.5 时代的 \`etcdctl snapshot restore\` 写成当前通用做法。
+
 ## 常见问题与限制
 
 | 现象 | 原因 | 处理 |
@@ -285,23 +312,23 @@ etcd 故障会首先表现为 apiserver 写入失败、watch 中断和控制器�
 
 ## 参考资料
 
-- [etcd 官方文档](https://etcd.io/docs/v3.6/)
-- [etcd Maintenance](https://etcd.io/docs/v3.6/op-guide/maintenance/)
-- [etcd Recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)
+- [etcd 官方文档](https://etcd.io/docs/v3.7/)
+- [etcd Maintenance](https://etcd.io/docs/v3.7/op-guide/maintenance/)
+- [etcd Recovery](https://etcd.io/docs/v3.7/op-guide/recovery/)
 - [Operating etcd clusters for Kubernetes](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)`,
     {
-      versions: 'Kubernetes 1.34；kubeadm 默认 etcd 3.6.5，外部 etcd 最低 3.5.24（1.31–1.33 为 3.5.24）',
-      docsUrl: 'https://etcd.io/docs/v3.6/',
-      version: 2,
-      replacesContentHash: '933548092960c40af1fa0ec0f20da6130cb803d917fe12e5f1fc6e91ecf430bf',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2 / etcd 3.7.x）；kubeadm 默认 etcd 3.6.6、3.6.8、3.7.0，外部最低 3.5.24',
+      docsUrl: 'https://etcd.io/docs/v3.7/',
+      version: 3,
+      replacesContentHash: '0d3afa829e0da7bd899e512510f5c4891655a5cbf4bb996116963ce184902e8c',
       referenceLinks: [
         {
           label: 'etcd Maintenance',
-          url: 'https://etcd.io/docs/v3.6/op-guide/maintenance/',
+          url: 'https://etcd.io/docs/v3.7/op-guide/maintenance/',
         },
         {
           label: 'etcd Recovery',
-          url: 'https://etcd.io/docs/v3.6/op-guide/recovery/',
+          url: 'https://etcd.io/docs/v3.7/op-guide/recovery/',
         },
         {
           label: 'Operating etcd clusters for Kubernetes',
@@ -395,6 +422,19 @@ Score 阶段对通过过滤的节点排序。常见插件考虑资源均衡度�
 - **专用节点池**：给节点打污点，再为特定工作负载配置容忍和节点亲和性，避免普通 Pod 占用。
 - **优先级**：为关键系统组件设置高优先级 PriorityClass，但不要滥用，否则会频繁触发抢占。
 
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 为核实基线，正文覆盖仍受上游支持的 1.35–1.37。Kubernetes 1.34 已于 2026-10-27 EOL。
+
+| 版本 | 机制 | 状态 | 差异与影响 |
+| --- | --- | --- | --- |
+| 1.28 | SchedulerQueueingHints | Beta | 引入基于事件的重新入队提示 |
+| 1.29–1.31 | SchedulerQueueingHints | 默认关闭 | 仍可显式启用，但默认走旧的重试路径 |
+| 1.32–1.33 | SchedulerQueueingHints | Beta | 默认开启 |
+| 1.34–1.37 | SchedulerQueueingHints | Stable | 默认开启；QueueingHint 仍不是调度周期的一个阶段 |
+
+1.35–1.37 没有改变调度框架的阶段划分。判断一个 Pod 为什么重新入队时，仍应区分 unschedulableQ、backoffQ 和 QueueingHint 事件；不要因为版本升级就把“重新入队”误写成调度阶段。
+
 ## 常见问题与限制
 
 - **Pod 一直 Pending**：先看 FailedScheduling 事件中的具体原因，再检查 requests、污点、亲和性、PVC 和配额。PDB 不会阻止调度，但配额和准入会。
@@ -417,10 +457,10 @@ controller-manager 中的工作负载控制器创建 Pod，scheduler 为 Pod 选
 - [Assigning Pods to Nodes](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/)
 - [Pod Priority and Preemption](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/)`,
     {
-      versions: 'Kubernetes 1.28+；QueueingHint 1.28 Beta、1.29–1.31 默认关闭、1.32–1.33 Beta、1.34 Stable',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2；QueueingHint 1.34 Stable 后未变）',
       docsUrl: 'https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/',
-      version: 3,
-      replacesContentHash: 'ed02356a1fd408738f5af436df9443889b59b55ac0a6e4d4372013f70518ee1f',
+      version: 4,
+      replacesContentHash: 'b1bda716dbdbfacad309caac96833a6872839dfc44e7553c9bc4baf66e17e427',
       referenceLinks: [
         {
           label: 'Scheduling Framework',
@@ -613,7 +653,7 @@ kubelet 根据 evictionHard/evictionSoft 阈值监控 memory.available、nodefs.
 
 ## 关键配置与实践
 
-以下为 Kubernetes 1.34 默认值。多数旧命令行标志已弃用，推荐写入 KubeletConfiguration（\`kubelet.config.k8s.io/v1beta1\`），命令行标志仅用于覆盖：
+以下为 Kubernetes 1.37 默认值（1.35–1.37 未变）。多数旧命令行标志已弃用，推荐写入 KubeletConfiguration（\`kubelet.config.k8s.io/v1beta1\`），命令行标志仅用于覆盖：
 
 - \`nodeStatusUpdateFrequency\`：10s，计算节点状态的频率。
 - \`nodeStatusReportFrequency\`：5m；若显式设置了 nodeStatusUpdateFrequency，则默认跟随该值。
@@ -627,7 +667,19 @@ kubelet 根据 evictionHard/evictionSoft 阈值监控 memory.available、nodefs.
 - \`containerRuntimeEndpoint\`：命令行标志的默认值为 \`unix:///run/containerd/containerd.sock\`，实际部署应按运行时配置。
 - \`kubeReserved\` / \`systemReserved\`：分别为 Kubernetes 组件和系统进程预留 CPU、内存等资源；不设置会让 Pod 与系统进程直接争抢。
 
-这些默认值只对 1.34 成立。升级 Kubernetes 或切换发行版后应重新核对配置，不能把旧版本的默认值直接套用。
+这些默认值以 1.37 为准。升级 Kubernetes 或切换发行版后仍应重新核对，不能把旧版本的默认值直接套用，也不能因为 1.35–1.37 恰好相同就假定未来 Minor 不变。
+
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 为核实基线，正文覆盖仍受上游支持的 1.35–1.37。Kubernetes 1.34 已于 2026-10-27 EOL。
+
+| 版本 | 机制 | 状态 | 差异与影响 |
+| --- | --- | --- | --- |
+| 1.34 | KubeletCgroupDriverFromCRI | Stable | kubelet 可使用 CRI 运行时报告的 cgroup driver，减少节点侧配置不一致 |
+| 1.35–1.37 | PodLevelResources | Beta | 节点侧 cgroup、QoS 和驱逐计算需把 Pod 级资源纳入；未启用时不生效 |
+| 1.36 | KubeletFineGrainedAuthz | Stable | kubelet API 的细粒度授权稳定；旧授权模型的限制不再适用 |
+
+cgroup driver 的最终选择仍要求 kubelet 与运行时一致。即使 1.34 起可以从 CRI 读取，显式配置错误或运行时报告异常仍会导致容器启动失败；kubeadm 部署通常两边都使用 systemd。
 
 ## 常见问题与限制
 
@@ -655,10 +707,10 @@ apiserver 短暂不可用时，kubelet 会继续运行已经拿到的 Pod，stat
 - [kubelet command-line reference](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/)
 - [Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)`,
     {
-      versions: 'Kubernetes 1.34；默认值以该版本 KubeletConfiguration 为准',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2；默认值以 1.37 KubeletConfiguration 为准）',
       docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kubelet',
-      version: 2,
-      replacesContentHash: 'b06009e6508d296ac938b86be03e81a1d3bd5b67249a0eaa838ae8bd6fa0dc36',
+      version: 3,
+      replacesContentHash: '088b7eedc30f8ff1c0e50b87459ea2effe6e8fe7fbbd199b68d5b1d6c6fb701f',
       referenceLinks: [
         {
           label: 'Kubelet Configuration (v1beta1)',
@@ -733,6 +785,18 @@ CRI API 自 Kubernetes 1.23 起为 Stable。Kubernetes 1.26 及以后，kubelet 
 
 版本不匹配的典型表现是 kubelet 启动日志中的 CRI 连接错误、节点无法注册，或 \`crictl info\` 无法连接。此时应检查 kubelet 的 endpoint、运行时 CRI 插件是否启用，以及双方支持的 API 版本，而不是只重启 kubelet。
 
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 为核实基线，正文覆盖仍受上游支持的 1.35–1.37。CRI API 自 1.23 起 Stable，1.26 起 kubelet 强制要求 v1；1.35–1.37 没有改变这个协议边界。
+
+| Kubernetes | 官方推荐 containerd | CRI 版本 | 说明 |
+| --- | --- | --- | --- |
+| 1.35 | 2.2.0+、2.1.5+、1.7.28+ | v1 | 1.7 分支已于 2026-09-30 EOL，不再作为新部署首选 |
+| 1.36 | 2.3.0+、2.2.0+ | v1 | 2.3 为 LTS |
+| 1.37 | 2.4.0+、2.3.0+ | v1 | 2.4 为当前 Active 分支 |
+
+这些是 containerd 官方兼容矩阵的推荐组合，不代表任意更高版本都经过同一 Kubernetes 版本验证，也不代表“能启动”就等于“官方推荐”。CRI 只定义 kubelet 与运行时之间的接口；CNI、CSI 和 OCI 的版本边界要分别核对。
+
 ## 常见问题与限制
 
 ### 运维与排查
@@ -761,18 +825,19 @@ CRI 也不是 CNI 或 CSI。CNI 由运行时在创建 sandbox 时调用，CSI �
 ## 参考资料
 
 - [Container Runtime Interface (CRI)](https://kubernetes.io/docs/concepts/architecture/cri/)
-- [CRI v1 API proto (release-1.34)](https://github.com/kubernetes/cri-api/blob/release-1.34/pkg/apis/runtime/v1/api.proto)
+- [CRI v1 API proto (release-1.37)](https://github.com/kubernetes/cri-api/blob/release-1.37/pkg/apis/runtime/v1/api.proto)
 - [Debugging Kubernetes nodes with crictl](https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/)
 - [kubelet command-line reference](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/)`,
     {
-      versions: 'CRI v1 自 Kubernetes 1.23 Stable；kubelet 1.26+ 要求运行时支持 v1',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2）；CRI v1 自 1.23 Stable，1.26+ 强制要求',
       docsUrl: 'https://kubernetes.io/docs/concepts/architecture/cri/',
       repoUrl: 'https://github.com/kubernetes/cri-api',
-      version: 2,
+      version: 3,
+      replacesContentHash: '00ad27a7a6934fdddea3b474d0e6a1990eecbcb7a7dcac50afa9ea06836e88df',
       referenceLinks: [
         {
-          label: 'CRI v1 API proto (release-1.34)',
-          url: 'https://github.com/kubernetes/cri-api/blob/release-1.34/pkg/apis/runtime/v1/api.proto',
+          label: 'CRI v1 API proto (release-1.37)',
+          url: 'https://github.com/kubernetes/cri-api/blob/release-1.37/pkg/apis/runtime/v1/api.proto',
         },
         {
           label: 'Debugging Kubernetes nodes with crictl',
@@ -793,7 +858,7 @@ containerd 是 CNCF 毕业的容器运行时守护进程，负责镜像分发、
 
 containerd 不只是“runc 的包装”。它维护镜像内容的本地存储、层解包后的快照、容器元数据和任务生命周期；runc 只负责按 OCI spec 创建一次进程然后退出，真正长期托管容器的是 shim 进程。理解这层分工，才能解释为什么 containerd 重启通常不会杀死运行中的容器，以及为什么镜像、快照和 shim 会成为不同的故障面。
 
-本文以 containerd 2.0 的版本化文档为准。1.x 的插件 ID、配置版本和 sandbox 镜像字段与 2.x 不同，不能把 2.x 的配置直接套到 1.x，反之亦然。
+本文以 containerd 2.4 的版本化文档为准，并覆盖仍受支持的 2.3 LTS。1.x 的插件 ID、配置版本和 sandbox 镜像字段与 2.x 不同，不能把 2.x 的配置直接套到 1.x，反之亦然。
 
 ## 设计原理
 
@@ -851,6 +916,18 @@ version = 3
 - registry 的镜像、TLS 和认证通过 \`config_path\` 指向的 \`hosts.toml\` 配置，例如 \`/etc/containerd/certs.d/docker.io/hosts.toml\`。kubelet 传递的 imagePullSecrets 会作为 CRI 拉取凭证使用，但仓库地址和 TLS 仍由 containerd 配置决定。
 - CRI socket 的默认路径通常是 \`/run/containerd/containerd.sock\`；kubelet 的 endpoint 必须指向实际路径。
 
+## 版本差异与兼容性
+
+本文以 containerd 2.4.x 为核实基线。containerd 2.4 为 Active 分支（支持至 2027-05-16），2.3 为 LTS（支持至 2028-04-30）；2.2 的 Active 支持将在 2026-11-06 结束，1.7 已于 2026-09-30 EOL。2.0 的延长支持主要面向 Kubernetes 1.33 的特定场景，不应作为新部署的通用推荐。
+
+| 版本 | 配置特征 | 状态 / 影响 |
+| --- | --- | --- |
+| containerd 1.x | 配置版本 2；单一 CRI 插件 ID \`io.containerd.grpc.v1.cri\`；\`sandbox_image\` | 1.7 已 EOL；只用于历史环境 |
+| containerd 2.0–2.4 | 配置版本 3；CRI 插件拆分为 \`io.containerd.cri.v1.runtime\` 与 \`io.containerd.cri.v1.images\`；\`pinned_images.sandbox\` | 2.3 LTS、2.4 Active；2.4 的 CRI 配置文档仍使用 version = 3 |
+| containerd 2.3+ | 通用 containerd 配置支持版本 4 | 迁移前应以对应版本的配置文档为准，不能把 1.x 配置直接改写后套用 |
+
+Kubernetes 与 containerd 的推荐组合也随版本变化：Kubernetes 1.35 推荐 2.2.0+、2.1.5+、1.7.28+；1.36 推荐 2.3.0+、2.2.0+；1.37 推荐 2.4.0+、2.3.0+。这些组合来自 containerd 官方 Kubernetes Support 矩阵，不能用一个固定的“最新版 containerd”替代。
+
 ## 常见问题与限制
 
 ### 运维与排查
@@ -892,32 +969,33 @@ containerd 通过 CRI 插件实现 CRI，kubelet 通过 CRI 调用它；它通�
 
 ## 参考资料
 
-- [containerd CRI plugin architecture (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/cri/architecture.md)
-- [containerd CRI config guide (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/cri/config.md)
-- [containerd PLUGINS (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/PLUGINS.md)
-- [containerd Content Flow (release/2.0)](https://github.com/containerd/containerd/blob/release/2.0/docs/content-flow.md)
+- [containerd CRI plugin architecture (release/2.4)](https://github.com/containerd/containerd/blob/release/2.4/docs/cri/architecture.md)
+- [containerd CRI config guide (release/2.4)](https://github.com/containerd/containerd/blob/release/2.4/docs/cri/config.md)
+- [containerd PLUGINS (release/2.4)](https://github.com/containerd/containerd/blob/release/2.4/docs/PLUGINS.md)
+- [containerd Content Flow (release/2.4)](https://github.com/containerd/containerd/blob/release/2.4/docs/content-flow.md)
 - [Containerd docs](https://containerd.io/docs/)`,
     {
-      versions: 'containerd 2.0（配置版本 3）；1.x 使用配置版本 2 和 io.containerd.grpc.v1.cri',
-      docsUrl: 'https://github.com/containerd/containerd/blob/release/2.0/docs/cri/config.md',
+      versions: 'containerd 2.3 LTS / 2.4 Active（核实基线 2.4.x）；1.x 使用配置版本 2 和旧 CRI 插件 ID',
+      docsUrl: 'https://github.com/containerd/containerd/blob/release/2.4/docs/cri/config.md',
       repoUrl: 'https://github.com/containerd/containerd',
-      version: 2,
+      version: 3,
+      replacesContentHash: '0fe722ef8676333a29757c44181544839fb20c9bdebe9f36aab96aa97117e206',
       referenceLinks: [
         {
-          label: 'containerd CRI architecture (release/2.0)',
-          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/cri/architecture.md',
+          label: 'containerd CRI architecture (release/2.4)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.4/docs/cri/architecture.md',
         },
         {
-          label: 'containerd CRI config (release/2.0)',
-          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/cri/config.md',
+          label: 'containerd CRI config (release/2.4)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.4/docs/cri/config.md',
         },
         {
-          label: 'containerd Content Flow (release/2.0)',
-          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/content-flow.md',
+          label: 'containerd Content Flow (release/2.4)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.4/docs/content-flow.md',
         },
         {
-          label: 'containerd PLUGINS (release/2.0)',
-          url: 'https://github.com/containerd/containerd/blob/release/2.0/docs/PLUGINS.md',
+          label: 'containerd PLUGINS (release/2.4)',
+          url: 'https://github.com/containerd/containerd/blob/release/2.4/docs/PLUGINS.md',
         },
       ],
     },
@@ -993,6 +1071,19 @@ Pod 的 phase 包括 Pending、Running、Succeeded、Failed 和 Unknown。phase 
 
 生产环境通常不直接创建裸 Pod，而是通过 Deployment、StatefulSet、DaemonSet 或 Job 管理。裸 Pod 缺少副本维持、滚动更新和自愈能力，节点故障后也不会自动重建。
 
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 为核实基线，正文覆盖仍受上游支持的 1.35–1.37。Kubernetes 1.34 已于 2026-10-27 EOL；旧版本中的 Pod 行为只在解释差异时保留。
+
+| 版本 | 机制 | 状态 | 差异与影响 |
+| --- | --- | --- | --- |
+| 1.34 | PodLevelResources | Beta | Pod 级 CPU/内存 requests 与 limits 可用；1.35–1.37 仍为 Beta，不能假定已经 GA |
+| 1.35 | InPlacePodLevelResourcesVerticalScaling | Alpha | 默认关闭；仅在显式启用时允许原地调整 Pod 级资源 |
+| 1.36 | InPlacePodLevelResourcesVerticalScaling | Beta | 默认启用；调整 Pod 级资源不必重建 Pod，但运行时和节点必须支持 |
+| 1.29 / 1.33 | 原生边车容器 | Beta / Stable | 1.33 起 Stable；1.35–1.37 行为一致 |
+
+Pod 级资源仍受 \`PodLevelResources\` 门控，且与容器级资源、QoS 和驱逐判定共同作用。升级到 1.35–1.37 不会自动把 1.34 的所有 Pod 行为升级为 Stable；判断生产能力时应同时看 Feature State 和是否真正启用。
+
 ## 常见问题与限制
 
 - **把 Pod 当成稳定主机**：Pod 重建后 IP、名称（除非由 StatefulSet 管理）和所在节点都可能变化。
@@ -1017,10 +1108,10 @@ Pod 由 ReplicaSet 维持副本，Deployment 通过 ReplicaSet 管理无状态 P
 - [Assign Pod-level CPU and memory resources](https://kubernetes.io/docs/tasks/configure-pod-container/assign-pod-level-resources/)
 - [Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)`,
     {
-      versions: 'Kubernetes 1.28+；原生边车容器 1.29 Beta、1.33 Stable；Pod 级资源 1.34 Beta',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2；PodLevelResources 1.34 Beta 至今未 GA）',
       docsUrl: 'https://kubernetes.io/docs/concepts/workloads/pods/',
-      version: 3,
-      replacesContentHash: '843eacb1a5e965fc554c842bc724ea8282dd9533b9ef68661787c474a8224b6c',
+      version: 4,
+      replacesContentHash: '9c646ec6ca0de6153bab9a7d50c99352ef367a1bd98c3bff19f1a399be973453',
       referenceLinks: [
         { label: 'Pod Lifecycle', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/' },
         { label: 'Sidecar Containers', url: 'https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/' },
@@ -1105,6 +1196,18 @@ paused: true 可以暂停发布，使多次模板修改合并为一次滚动；�
 - **progressDeadlineSeconds**：应大于应用最慢启动时间与探针判定时间之和，否则会把正常慢启动误报为失败。
 - **PDB**：限制节点维护或驱逐时的自愿中断，但它不能阻止滚动更新本身；Deployment 的 maxUnavailable 与 PDB 需要一起评估。
 
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 为核实基线，正文覆盖仍受上游支持的 1.35–1.37。Kubernetes 1.34 已于 2026-10-27 EOL。
+
+| 版本 | 机制 | 状态 | 差异与影响 |
+| --- | --- | --- | --- |
+| 1.33 | DeploymentReplicaSetTerminatingReplicas | Alpha | 默认关闭；不能依赖 terminatingReplicas 状态字段 |
+| 1.35 | DeploymentReplicaSetTerminatingReplicas | Beta | 默认开启；\`.status.terminatingReplicas\` 可观察正在终止的副本，但不改变滚动更新算法 |
+| 1.35–1.37 | RollingUpdate / Recreate | 稳定行为 | maxSurge、maxUnavailable、progressDeadlineSeconds 的语义未变 |
+
+Deployment 的主要发布语义在 1.35–1.37 保持稳定；新增的终止副本状态字段是观测能力，不是发布策略变更。回滚仍然只回滚 Pod 模板，不会回滚数据库迁移或外部配置。
+
 ## 常见问题与限制
 
 - **发布卡住**：新 Pod 无法调度、镜像拉取失败、readinessProbe 一直失败或配额不足都会让旧副本无法继续缩减。应先看 Deployment conditions、ReplicaSet 事件和 Pod 状态。
@@ -1127,10 +1230,10 @@ Deployment 由 kube-controller-manager 中的 Deployment 控制器驱动，后�
 - [Specifying a Disruption Budget for your Application](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)
 - [Horizontal Pod Autoscaling](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)`,
     {
-      versions: 'Kubernetes 1.28+',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2；1.34 已于 2026-10-27 EOL）',
       docsUrl: 'https://kubernetes.io/docs/concepts/workloads/controllers/deployment/',
-      version: 2,
-      replacesContentHash: '3784a8b6a3b9d237979eb5b1b416b80ca90c343ea4154ac19ccfab826c8ad6fb',
+      version: 3,
+      replacesContentHash: '67c82aebca8355ae1b3fdeec1cd8d29d2be0610c170dea402489824c0b2967bf',
       referenceLinks: [
         { label: 'ReplicaSet', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/' },
         { label: 'PodDisruptionBudget', url: 'https://kubernetes.io/docs/tasks/run-application/configure-pdb/' },
@@ -1385,6 +1488,18 @@ sessionAffinity: ClientIP 可以把同一客户端 IP 的请求固定到同一�
 - **NodePort/LoadBalancer 的源 IP**：需要保留客户端 IP 时评估 externalTrafficPolicy: Local 及外部负载均衡器的健康检查配置。
 - **PDB 与端点移除**：Pod 进入终止流程后会从就绪端点移除，但已有连接仍可能短暂存在，应用应配合优雅终止。
 
+## 版本差异与兼容性
+
+本文以 Kubernetes 1.37.2 为核实基线，正文覆盖仍受上游支持的 1.35–1.37。Kubernetes 1.34 已于 2026-10-27 EOL。
+
+| 版本 | 机制 | 状态 | 差异与影响 |
+| --- | --- | --- | --- |
+| 1.26+ | EndpointSlice ready / serving / terminating | 稳定语义 | 1.35–1.37 未改变端点条件定义；\`publishNotReadyAddresses\` 仍会让 ready 恒为 true |
+| 1.33 | ServiceTrafficDistribution | Stable | \`spec.trafficDistribution\` 可用于表达流量分布偏好 |
+| 1.35 | PreferSameTrafficDistribution | Stable | 可使用同节点/同区域偏好；实际效果取决于数据面是否实现 |
+
+EndpointSlice 的端点集合仍然不等于“所有 ready Pod”。版本升级不会改变 selector 选中、Pod Ready 条件或多容器就绪的判定关系；排查“有 Pod 但没流量”时仍应先看端点 condition，而不是只看 Service 对象。
+
 ## 常见问题与限制
 
 - **EndpointSlice 为空**：selector 与 Pod 标签不匹配、命名空间不一致，或 Service 没有 selector 且未手工维护端点；Pod 未就绪不会让切片变空，而是让端点 ready=false。
@@ -1408,10 +1523,10 @@ Pod 是 Service 的后端，Service 通过 selector 选择就绪 Pod。EndpointS
 - [DNS for Services and Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/)
 - [Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/)`,
     {
-      versions: 'Kubernetes 1.28+',
+      versions: 'Kubernetes 1.35–1.37（核实基线 1.37.2；1.34 已于 2026-10-27 EOL）',
       docsUrl: 'https://kubernetes.io/docs/concepts/services-networking/service/',
-      version: 3,
-      replacesContentHash: '7545b630d27792ac92b14fa12ddf7c4a7b1896d81676255c833ff658e0f554df',
+      version: 4,
+      replacesContentHash: 'eb83525ad578d6044ff382dbd07142dfaf595417c60d516188e0f53217646f0d',
       referenceLinks: [
         {
           label: 'EndpointSlices',
