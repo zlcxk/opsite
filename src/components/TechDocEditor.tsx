@@ -37,8 +37,11 @@ interface BaseDoc {
   status: TechContentStatus;
   source: TechContentSource | '';
   versions: string;
-  verifiedVersion: string;
-  verifiedAt: string | null;
+}
+
+interface VerificationRecord {
+  version: string;
+  at: string | null;
 }
 
 function baseFromNode(node: TechNode): BaseDoc {
@@ -47,9 +50,11 @@ function baseFromNode(node: TechNode): BaseDoc {
     status: node.contentStatus,
     source: node.contentSource ?? '',
     versions: node.applicableVersions ?? '',
-    verifiedVersion: node.verifiedVersion ?? '',
-    verifiedAt: node.contentVerifiedAt,
   };
+}
+
+function verificationFromNode(node: TechNode): VerificationRecord {
+  return { version: node.verifiedVersion ?? '', at: node.contentVerifiedAt };
 }
 
 function sameDoc(a: BaseDoc, b: BaseDoc): boolean {
@@ -57,9 +62,7 @@ function sameDoc(a: BaseDoc, b: BaseDoc): boolean {
     a.markdown === b.markdown &&
     a.status === b.status &&
     a.source === b.source &&
-    a.versions === b.versions &&
-    a.verifiedVersion === b.verifiedVersion &&
-    a.verifiedAt === b.verifiedAt
+    a.versions === b.versions
   );
 }
 
@@ -76,6 +79,9 @@ export const TechDocEditor = forwardRef<
   const { push } = useToast();
   const [draft, setDraft] = useState<BaseDoc>(() => baseFromNode(node));
   const [base, setBase] = useState<BaseDoc>(() => baseFromNode(node));
+  const [verification, setVerification] = useState<VerificationRecord>(() => verificationFromNode(node));
+  const [verifyVersion, setVerifyVersion] = useState('');
+  const [verifying, setVerifying] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const inFlightRef = useRef<Promise<boolean> | null>(null);
@@ -93,6 +99,8 @@ export const TechDocEditor = forwardRef<
     const next = baseFromNode(node);
     setDraft(next);
     setBase(next);
+    setVerification(verificationFromNode(node));
+    setVerifyVersion('');
     setSaveState('idle');
     setSaveError(null);
   }, [node.id]);
@@ -116,23 +124,19 @@ export const TechDocEditor = forwardRef<
     setSaveError(null);
     const payload: BaseDoc = { ...draftRef.current };
     try {
-      const saved = await api.patch<TechNode>(`/tech/nodes/${nodeRef.current.id}`, {
+      // `complete` and verification metadata are owned by the explicit verify
+      // endpoint. A normal save never sends them, so it cannot bypass Verify.
+      const body: Record<string, unknown> = {
         contentMarkdown: payload.markdown.trim() ? payload.markdown : null,
-        contentStatus: payload.status,
         contentSource: payload.source || null,
         applicableVersions: payload.versions.trim() || null,
-        verifiedVersion: payload.verifiedVersion.trim() || null,
-      });
-      const next = {
-        markdown: saved.contentMarkdown ?? '',
-        status: saved.contentStatus,
-        source: saved.contentSource ?? '',
-        versions: saved.applicableVersions ?? '',
-        verifiedVersion: saved.verifiedVersion ?? '',
-        verifiedAt: saved.contentVerifiedAt,
-      } satisfies BaseDoc;
+      };
+      if (payload.status !== 'complete') body.contentStatus = payload.status;
+      const saved = await api.patch<TechNode>(`/tech/nodes/${nodeRef.current.id}`, body);
+      const next = baseFromNode(saved);
       baseRef.current = next;
       setBase(next);
+      setVerification({ version: saved.verifiedVersion ?? '', at: saved.contentVerifiedAt });
       setDraft((current) => (sameDoc(current, payload) ? next : current));
       setSaveState('saved');
       if (!silent) push('技术文档已保存');
@@ -161,15 +165,6 @@ export const TechDocEditor = forwardRef<
       setSaveState('saved');
       return true;
     }
-    const current = draftRef.current;
-    if (current.status === 'complete' && !current.markdown.trim()) {
-      if (!silent) push('内容为空时无法标记为已完善', 'error');
-      return false;
-    }
-    if (current.status === 'complete' && !current.verifiedVersion.trim()) {
-      if (!silent) push('标记已完善前，请填写本次实际验证的版本', 'error');
-      return false;
-    }
     const task = runSave(silent).finally(() => {
       inFlightRef.current = null;
     });
@@ -183,35 +178,50 @@ export const TechDocEditor = forwardRef<
   }), [dirty]);
 
   const verify = async () => {
+    if (verifying) return;
     const current = draftRef.current;
+    const version = verifyVersion.trim();
     if (!current.markdown.trim()) {
       push('没有文档内容，无法验证', 'error');
       return;
     }
-    if (!current.verifiedVersion.trim()) {
+    if (!version) {
       push('请填写本次实际验证的版本', 'error');
       return;
     }
-    const saved = await save(true);
-    if (!saved) return;
-    setSaveState('saving');
-    setSaveError(null);
+    setVerifying(true);
     try {
-      const verified = await api.post<TechNode>(`/tech/nodes/${nodeRef.current.id}/verify`, {
-        version: draftRef.current.verifiedVersion.trim(),
-      });
-      const next = baseFromNode(verified);
-      baseRef.current = next;
-      setBase(next);
-      setDraft(next);
-      setSaveState('saved');
-      onSaved?.(verified);
-      push(`文档已验证，当前状态为已完善（${next.verifiedVersion}）`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '验证失败';
-      setSaveState('error');
-      setSaveError(message);
-      push(message, 'error');
+      // Persist pending edits first; Verify must attest to the content the user
+      // actually sees, and it never writes the Markdown body itself.
+      const saved = await save(true);
+      if (!saved) return;
+      setSaveState('saving');
+      setSaveError(null);
+      // Capture what was actually verified. If the author keeps typing while
+      // the request is in flight, keep those newer keystrokes as a dirty draft
+      // instead of replacing them with the verified snapshot.
+      const verifiedBase = { ...baseRef.current };
+      try {
+        const verified = await api.post<TechNode>(`/tech/nodes/${nodeRef.current.id}/verify`, {
+          version,
+        });
+        const next = baseFromNode(verified);
+        baseRef.current = next;
+        setBase(next);
+        setDraft((current) => (sameDoc(current, verifiedBase) ? next : current));
+        setVerification({ version: verified.verifiedVersion ?? version, at: verified.contentVerifiedAt });
+        setVerifyVersion('');
+        setSaveState('saved');
+        onSaved?.(verified);
+        push(`文档已验证，当前状态为已完善（${verified.verifiedVersion ?? version}）`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '验证失败';
+        setSaveState('error');
+        setSaveError(message);
+        push(message, 'error');
+      }
+    } finally {
+      setVerifying(false);
     }
   };
 
@@ -262,12 +272,20 @@ export const TechDocEditor = forwardRef<
               setDraft({ ...draft, status: event.target.value as TechContentStatus })
             }
           >
-            {contentStatusOrder.map((status) => (
-              <option key={status} value={status}>
-                {contentStatusLabels[status]}
+            {draft.status === 'complete' && (
+              <option value="complete" disabled>
+                已完善（通过“验证知识”维护）
               </option>
-            ))}
+            )}
+            {contentStatusOrder
+              .filter((status) => status !== 'complete')
+              .map((status) => (
+                <option key={status} value={status}>
+                  {contentStatusLabels[status]}
+                </option>
+              ))}
           </select>
+          <span className="field-hint">“已完善”只能由验证操作设置；修改正文会自动回到草稿。</span>
         </label>
         <label className="field">
           <span className="field-label">来源</span>
@@ -296,15 +314,19 @@ export const TechDocEditor = forwardRef<
           />
         </label>
         <label className="field">
-          <span className="field-label">已验证版本</span>
+          <span className="field-label">验证依据版本</span>
           <input
             className="field-input"
-            value={draft.verifiedVersion}
-            onChange={(event) => setDraft({ ...draft, verifiedVersion: event.target.value })}
+            value={verifyVersion}
+            onChange={(event) => setVerifyVersion(event.target.value)}
             placeholder="如 1.34"
           />
           <span className="field-hint">
-            {draft.verifiedAt ? `上次验证 ${formatDateTime(draft.verifiedAt)}` : '尚未人工验证'}
+            {verification.version
+              ? `上次验证 ${verification.version}${
+                  verification.at ? ` · ${formatDateTime(verification.at)}` : ''
+                }`
+              : '尚未人工验证'}
           </span>
         </label>
       </div>
@@ -358,10 +380,12 @@ export const TechDocEditor = forwardRef<
           <button
             className="btn btn-ghost btn-sm"
             onClick={() => void verify()}
-            disabled={saveState === 'saving' || !draft.markdown.trim() || !draft.verifiedVersion.trim()}
+            disabled={
+              saveState === 'saving' || verifying || !draft.markdown.trim() || !verifyVersion.trim()
+            }
             title="确认内容已核对，记录验证时间和实际验证版本"
           >
-            <BadgeCheck size={12} /> 验证知识
+            <BadgeCheck size={12} /> {verifying ? '验证中…' : '验证知识'}
           </button>
           {saveState === 'error' && (
             <button className="btn btn-secondary btn-sm" onClick={() => void save()}>

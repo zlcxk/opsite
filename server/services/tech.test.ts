@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -129,6 +130,77 @@ describe('technology map seed', () => {
     expect(
       relations.some((relation) => relation.source.id === 'k8s-monitoring' && relation.target.id === 'prom-core'),
     ).toBe(true);
+  });
+
+  it('uses the corrected P5.4 relations without dropping existing links', () => {
+    const k8s = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const relations = tech.listRelations({ domainId: k8s.id });
+    const proxy = relations.find((relation) => relation.id === 'rel-k8s-service-proxy');
+    expect(proxy?.relationType).toBe('related');
+    expect(proxy?.description).toContain('数据面');
+    expect(
+      relations.some(
+        (relation) =>
+          relation.id === 'rel-k8s-service-pod' &&
+          relation.source.id === 'k8s-service' &&
+          relation.target.id === 'k8s-pod',
+      ),
+    ).toBe(true);
+    expect(
+      relations.some(
+        (relation) =>
+          relation.id === 'rel-k8s-cm-deploy' &&
+          relation.source.id === 'k8s-controller-manager' &&
+          relation.target.id === 'k8s-deployment',
+      ),
+    ).toBe(true);
+    expect(
+      relations.some(
+        (relation) =>
+          relation.id === 'rel-k8s-cm-api' &&
+          relation.source.id === 'k8s-controller-manager' &&
+          relation.target.id === 'k8s-apiserver' &&
+          relation.relationType === 'depends_on',
+      ),
+    ).toBe(true);
+  });
+
+  it('migrates only the exact seeded relation and preserves user changes', () => {
+    const before = tech.listRelations({ domainId: 'tech-domain-kubernetes' }).length;
+    dbModule.db
+      .prepare(
+        `UPDATE tech_relations SET relation_type = 'depends_on', description = NULL
+         WHERE id = 'rel-k8s-service-proxy'`,
+      )
+      .run();
+    expect(seed.migrateP54Relations()).toBe(1);
+    const migrated = dbModule.db
+      .prepare('SELECT relation_type, description FROM tech_relations WHERE id = ?')
+      .get('rel-k8s-service-proxy') as { relation_type: string; description: string };
+    expect(migrated.relation_type).toBe('related');
+    expect(migrated.description).toContain('数据面');
+
+    dbModule.db
+      .prepare(
+        `UPDATE tech_relations SET relation_type = 'alternative', description = '用户自己的说明'
+         WHERE id = 'rel-k8s-service-proxy'`,
+      )
+      .run();
+    expect(seed.migrateP54Relations()).toBe(0);
+    const preserved = dbModule.db
+      .prepare('SELECT relation_type, description FROM tech_relations WHERE id = ?')
+      .get('rel-k8s-service-proxy') as { relation_type: string; description: string };
+    expect(preserved.relation_type).toBe('alternative');
+    expect(preserved.description).toBe('用户自己的说明');
+    expect(tech.listRelations({ domainId: 'tech-domain-kubernetes' }).length).toBe(before);
+
+    dbModule.db
+      .prepare(
+        `UPDATE tech_relations SET relation_type = 'related',
+           description = 'kube-proxy 是 Service 的一种数据面实现，eBPF CNI 等实现可以替代它。'
+         WHERE id = 'rel-k8s-service-proxy'`,
+      )
+      .run();
   });
 });
 
@@ -271,7 +343,10 @@ describe('technology knowledge content', () => {
     expect(drafted.contentStatus).toBe('needs_review');
     expect(drafted.hasContent).toBe(true);
 
-    const completed = tech.updateNode(node.id, { contentStatus: 'complete' });
+    expect(() => tech.updateNode(node.id, { contentStatus: 'complete' })).toThrow(
+      /验证操作/,
+    );
+    const completed = tech.verifyNodeContent(node.id, { version: 'v1.0' });
     expect(completed.contentStatus).toBe('complete');
 
     const edited = tech.updateNode(node.id, {
@@ -279,11 +354,51 @@ describe('technology knowledge content', () => {
     });
     expect(edited.contentStatus).toBe('draft');
 
-    const emptied = tech.updateNode(node.id, { contentMarkdown: '   ', contentStatus: 'complete' });
+    const emptied = tech.updateNode(node.id, { contentMarkdown: '   ' });
     expect(emptied.contentStatus).toBe('missing');
     expect(emptied.contentMarkdown).toBeNull();
 
     tech.deleteNode(node.id);
+  });
+
+  it('replaces only an untouched draft whose hash matches the previous authored body', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const hash = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
+    const oldBody = '# 旧版\n\n这是上一版权威内容。';
+    const newBody = '# 新版\n\n这是经过质量治理的内容。';
+    const makeEntry = (nodeId: string) => ({
+      nodeId,
+      version: 2,
+      contentMarkdown: newBody,
+      replacesContentHash: hash(oldBody),
+    });
+
+    const untouched = tech.createNode(domain.id, { name: '哈希升级测试节点', nodeType: 'concept' });
+    tech.updateNode(untouched.id, { contentMarkdown: oldBody });
+    expect(content.applyTechContentEntry(makeEntry(untouched.id))).toBe(true);
+    expect(tech.getNode(untouched.id)!.contentMarkdown).toBe(newBody);
+    expect(tech.getNode(untouched.id)!.contentStatus).toBe('draft');
+
+    const edited = tech.createNode(domain.id, { name: '哈希保护编辑节点', nodeType: 'concept' });
+    tech.updateNode(edited.id, { contentMarkdown: oldBody });
+    tech.updateNode(edited.id, { contentMarkdown: '# 用户修改\n\n不要覆盖。' });
+    expect(content.applyTechContentEntry(makeEntry(edited.id))).toBe(false);
+    expect(tech.getNode(edited.id)!.contentMarkdown).toContain('不要覆盖');
+
+    const verified = tech.createNode(domain.id, { name: '哈希保护验证节点', nodeType: 'concept' });
+    tech.updateNode(verified.id, { contentMarkdown: oldBody });
+    tech.verifyNodeContent(verified.id, { version: 'v1.0' });
+    expect(content.applyTechContentEntry(makeEntry(verified.id))).toBe(false);
+    expect(tech.getNode(verified.id)!.contentMarkdown).toBe(oldBody);
+    expect(tech.getNode(verified.id)!.contentStatus).toBe('complete');
+
+    const triaged = tech.createNode(domain.id, { name: '哈希保护复核节点', nodeType: 'concept' });
+    tech.updateNode(triaged.id, { contentMarkdown: oldBody, contentStatus: 'needs_review' });
+    expect(content.applyTechContentEntry(makeEntry(triaged.id))).toBe(false);
+    expect(tech.getNode(triaged.id)!.contentMarkdown).toBe(oldBody);
+    expect(tech.getNode(triaged.id)!.contentStatus).toBe('needs_review');
+
+    for (const node of [untouched, edited, verified, triaged]) tech.deleteNode(node.id);
   });
 
   it('never overwrites user content when the content seed runs again', () => {
@@ -293,13 +408,15 @@ describe('technology knowledge content', () => {
       status: node.contentStatus,
       role: node.technicalRole,
       versions: node.applicableVersions,
+      verifiedVersion: node.verifiedVersion,
+      verifiedAt: node.contentVerifiedAt,
     };
     tech.updateNode('k8s-apiserver', {
       contentMarkdown: '# 我的 apiserver 笔记\n\n只属于我的内容。',
-      contentStatus: 'complete',
       technicalRole: '我自定义的技术角色',
       applicableVersions: '内部版本 1.0',
     });
+    tech.verifyNodeContent('k8s-apiserver', { version: '内部验证版本 1.0' });
     dbModule.db.prepare('DELETE FROM tech_content_seed WHERE key = ?').run('k8s-apiserver');
     content.seedTechContent();
 
@@ -308,20 +425,30 @@ describe('technology knowledge content', () => {
     expect(after.contentStatus).toBe('complete');
     expect(after.technicalRole).toBe('我自定义的技术角色');
     expect(after.applicableVersions).toBe('内部版本 1.0');
+    expect(after.verifiedVersion).toBe('内部验证版本 1.0');
 
-    tech.updateNode('k8s-apiserver', {
-      contentMarkdown: original.markdown,
-      contentStatus: original.status,
-      technicalRole: original.role,
-      applicableVersions: original.versions,
-    });
+    dbModule.db
+      .prepare(
+        `UPDATE tech_nodes SET content_markdown = ?, content_status = ?, technical_role = ?,
+           applicable_versions = ?, verified_version = ?, content_verified_at = ? WHERE id = ?`,
+      )
+      .run(
+        original.markdown,
+        original.status,
+        original.role,
+        original.versions,
+        original.verifiedVersion,
+        original.verifiedAt,
+        'k8s-apiserver',
+      );
   });
 
   it('reports content statistics and excludes archived nodes', () => {
     const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Prometheus')!;
     const baseline = tech.contentCounts();
     const node = tech.createNode(domain.id, { name: '统计测试节点', nodeType: 'component' });
-    tech.updateNode(node.id, { contentMarkdown: '# 文档', contentStatus: 'complete' });
+    tech.updateNode(node.id, { contentMarkdown: '# 文档' });
+    tech.verifyNodeContent(node.id, { version: 'v1.0' });
 
     const withNode = tech.contentCounts(domain.id);
     expect(withNode.total).toBeGreaterThanOrEqual(1);
@@ -374,13 +501,48 @@ describe('content verification and stale review', () => {
     tech.deleteNode(node.id);
   });
 
+  it('requires an explicit version before verification', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    const node = tech.createNode(domain.id, { name: '验证版本必填测试节点', nodeType: 'concept' });
+    tech.updateNode(node.id, { contentMarkdown: '# 内容' });
+    expect(() => tech.verifyNodeContent(node.id, {})).toThrow(/版本/);
+    expect(() => tech.verifyNodeContent(node.id, { version: '   ' })).toThrow(/版本/);
+    expect(tech.getNode(node.id)!.contentStatus).toBe('draft');
+    expect(tech.getNode(node.id)!.verifiedVersion).toBeNull();
+    tech.deleteNode(node.id);
+  });
+
+  it('rejects direct complete status and verification metadata through ordinary writes', () => {
+    const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
+    expect(() =>
+      tech.createNode(domain.id, {
+        name: '直接完成创建测试节点',
+        nodeType: 'concept',
+        contentMarkdown: '# 内容',
+        contentStatus: 'complete',
+      }),
+    ).toThrow(/验证操作/);
+    const node = tech.createNode(domain.id, { name: '直接完成更新测试节点', nodeType: 'concept' });
+    tech.updateNode(node.id, { contentMarkdown: '# 内容', contentStatus: 'draft' });
+    expect(() => tech.updateNode(node.id, { contentStatus: 'complete' })).toThrow(/验证操作/);
+    expect(() => tech.updateNode(node.id, { verifiedVersion: 'v9.9' })).toThrow(/验证操作/);
+    const unchanged = tech.getNode(node.id)!;
+    expect(unchanged.contentStatus).toBe('draft');
+    expect(unchanged.verifiedVersion).toBeNull();
+    expect(unchanged.contentVerifiedAt).toBeNull();
+    tech.deleteNode(node.id);
+  });
+
   it('retains the last verification when a complete document is edited', () => {
     const domain = tech.listDomainSummaries().find((entry) => entry.name === 'Kubernetes')!;
     const node = tech.createNode(domain.id, { name: '验证历史测试节点', nodeType: 'concept' });
     tech.updateNode(node.id, { contentMarkdown: '# 第一版', contentStatus: 'draft' });
     const verified = tech.verifyNodeContent(node.id, { version: 'v2.0' });
 
-    const edited = tech.updateNode(node.id, { contentMarkdown: '# 第二版' });
+    const edited = tech.updateNode(node.id, {
+      contentMarkdown: '# 第二版',
+      contentStatus: 'needs_review',
+    });
     expect(edited.contentStatus).toBe('draft');
     expect(edited.verifiedVersion).toBe('v2.0');
     expect(edited.contentVerifiedAt).toBe(verified.contentVerifiedAt);
@@ -429,13 +591,37 @@ describe('software and technical knowledge links', () => {
     tech.deleteNode(node.id);
   });
 
-  it('keeps seed content priority explicit and ignores undefined overrides', () => {
+  it('keeps seed content priority explicit and ignores undefined, null and empty overrides', () => {
     const merged = content.mergeDefined(
-      { nodeId: 'merge-test', docsUrl: 'https://example.com/docs', repoUrl: 'https://github.com/a/b' },
-      { nodeId: 'merge-test', docsUrl: undefined, repoUrl: 'https://github.com/c/d' },
+      {
+        nodeId: 'merge-test',
+        docsUrl: 'https://example.com/docs',
+        repoUrl: 'https://github.com/a/b',
+        description: '已有描述',
+        referenceLinks: [{ label: 'Docs', url: 'https://example.com/docs' }],
+      },
+      {
+        nodeId: 'merge-test',
+        docsUrl: undefined,
+        repoUrl: '',
+        description: null as unknown as string,
+        referenceLinks: [],
+        contentMarkdown: '   ',
+      },
     );
     expect(merged.docsUrl).toBe('https://example.com/docs');
-    expect(merged.repoUrl).toBe('https://github.com/c/d');
+    expect(merged.repoUrl).toBe('https://github.com/a/b');
+    expect(merged.description).toBe('已有描述');
+    expect(merged.referenceLinks).toHaveLength(1);
+    expect(merged.contentMarkdown).toBeUndefined();
+
+    const overridden = content.mergeDefined(merged, {
+      nodeId: 'merge-test',
+      repoUrl: 'https://github.com/c/d',
+      contentMarkdown: '# 新内容',
+    });
+    expect(overridden.repoUrl).toBe('https://github.com/c/d');
+    expect(overridden.contentMarkdown).toBe('# 新内容');
   });
 });
 

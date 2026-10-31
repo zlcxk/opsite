@@ -426,9 +426,12 @@ export function TechNode() {
             <div className="panel-body">
               <div className="tech-doc-facts">
                 <span>适用版本：{node.applicableVersions || '未标注'}</span>
-                <span>已验证版本：{node.verifiedVersion || '尚未验证'}</span>
                 <span>
-                  最后验证：
+                  {node.contentStatus === 'complete' ? '已验证版本' : '上次验证版本'}：
+                  {node.verifiedVersion || '尚未验证'}
+                </span>
+                <span>
+                  {node.contentStatus === 'complete' ? '最后验证' : '上次验证'}：
                   {node.contentVerifiedAt ? formatDateTime(node.contentVerifiedAt) : '尚未验证'}
                 </span>
                 <span>内容来源：{node.contentSource ? contentSourceLabels[node.contentSource] : '未标注'}</span>

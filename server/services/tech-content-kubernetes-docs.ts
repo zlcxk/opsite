@@ -1,18 +1,29 @@
+import type { TechExternalLink } from '../../shared/types.js';
 import type { TechContentEntry } from './tech-content.js';
 
 const d = (
   nodeId: string,
   contentMarkdown: string,
-  options: { versions?: string; docsUrl?: string; repoUrl?: string; source?: 'official' | 'mixed' | 'curated' } = {},
+  options: {
+    versions?: string;
+    docsUrl?: string;
+    repoUrl?: string;
+    source?: 'official' | 'mixed' | 'curated';
+    referenceLinks?: TechExternalLink[];
+    version?: number;
+    replacesContentHash?: string;
+  } = {},
 ): TechContentEntry => ({
   nodeId,
-  version: 1,
+  version: options.version ?? 1,
   contentMarkdown,
   contentStatus: 'draft',
   contentSource: options.source ?? 'mixed',
   applicableVersions: options.versions ?? 'Kubernetes 1.28+（除单独标注外）',
   docsUrl: options.docsUrl,
   repoUrl: options.repoUrl,
+  referenceLinks: options.referenceLinks,
+  replacesContentHash: options.replacesContentHash,
 });
 
 /**
@@ -185,102 +196,234 @@ ETCDCTL_API=3 etcdctl snapshot save /backup/etcd-$(date +%F).db \\
   ),
   d(
     'k8s-scheduler',
-    `## 组件定位
+    `## 技术定位
 
-kube-scheduler 为新创建且未绑定节点的 Pod 选择节点。它是资源放置策略的执行者，不负责实际启动容器。
+kube-scheduler 是 Kubernetes 控制面中的放置决策组件。它监听尚未绑定节点的 Pod，根据资源请求、亲和性、污点、拓扑和存储约束筛选节点，再通过打分选出最合适的一个，最后写入 Binding。调度器只决定“Pod 应该去哪”，不负责拉镜像、挂载存储或启动容器，这些由目标节点上的 kubelet 完成。
 
-## 核心职责
+调度器是集群容量与业务约束之间的协调者：它既要避免节点过载，也要满足高可用、故障域隔离、专用节点池和存储拓扑等要求。它不创建节点，也不直接迁移运行中的 Pod；节点扩容通常由 Cluster Autoscaler 等外部组件根据 Pending Pod 触发。
 
-- 过滤不满足硬性条件的节点。
-- 对可行节点打分并选择最优节点。
-- 写入 Binding，通知 kubelet 接管 Pod。
-- 在资源不足时支持优先级和抢占。
+## 设计原理
 
-## 工作原理
+### 调度队列
 
-调度分为两个阶段：
+调度器通过 informer 监听 Pod 变化，把未绑定节点且未被删除的 Pod 放入队列。队列通常分为：
 
-1. **Filter**：检查资源请求、节点选择器、亲和性、污点、PVC 拓扑等硬约束。
-2. **Score**：按资源均衡、拓扑分布、镜像本地性等策略打分，选出最高分节点。
+- **activeQ**：当前可被调度的 Pod，按优先级排序。
+- **backoffQ**：上一次调度失败、正在退避的 Pod。
+- **unschedulableQ**：因硬约束暂时无法调度的 Pod，等待集群状态变化后重试。
 
-调度只看 Pod 的 request，不看节点的实时使用率。因此 request 设置不准确会直接导致放置错误。
+调度器一次只为一个 Pod 执行调度周期，但绑定周期可以与后续 Pod 的调度并行。若绑定失败，调度器会从缓存中撤销对该 Pod 的假设，并把它重新放回队列。这个 assume/forget 机制避免了多个 Pod 同时争抢同一份资源。
 
-## 关键机制
+### 调度框架阶段
 
-- **调度框架插件**：Filter、Score、Bind 等扩展点。
-- **nodeAffinity / podAffinity / podAntiAffinity**：节点和 Pod 之间的约束。
-- **Taints / Tolerations**：节点主动排斥 Pod。
-- **TopologySpreadConstraints**：按可用区、节点等拓扑打散。
-- **PriorityClass / Preemption**：高优先级 Pod 可以驱逐低优先级 Pod。
+调度框架把调度周期拆成可插拔扩展点，插件可以在这些阶段插入逻辑：
 
-## 典型场景
+1. **PreEnqueue**：决定 Pod 是否允许进入调度队列。
+2. **QueueSort**：定义队列排序，通常由优先级决定。
+3. **PreFilter**：预计算 Pod 的调度需求，或提前判断不可能满足的条件。
+4. **Filter**：逐个节点检查硬约束，返回可行节点集合。
+5. **PostFilter**：没有可行节点时执行，默认实现是抢占。
+6. **PreScore**：为打分做准备。
+7. **Score**：对可行节点打分。
+8. **NormalizeScore**：把插件分数归一化到统一范围。
+9. **Reserve**：为选中的节点预留资源，失败则进入 Unreserve。
+10. **Permit**：允许插件延迟或拒绝绑定。
+11. **PreBind**：绑定前准备，例如挂载卷。
+12. **Bind**：写入 Pod 的 nodeName。
+13. **PostBind**：绑定成功后的清理和通知。
 
-- Pod 一直 Pending：看 Events 中的 \`FailedScheduling\` 原因。
-- 多可用区高可用：用 topologySpread 或反亲和打散。
-- 专用节点池：给节点打污点，只让特定工作负载容忍。
+### 过滤与打分
 
-## 常见故障与排查
+Filter 阶段常见的硬约束包括节点可分配资源、节点是否可调度、污点与容忍、节点亲和性、Pod 亲和与反亲和、拓扑分布、卷拓扑和端口冲突。节点可分配资源是 allocatable 减去已请求资源；调度器看的是 requests 和 Pod overhead，而不是容器实时 CPU 使用率。
 
-~~~bash
-kubectl describe pod <pod> -n <ns> | sed -n '/Events/,$p'
-kubectl get nodes -o custom-columns=NAME:.metadata.name,CPU:.status.allocatable.cpu,MEM:.status.allocatable.memory
-~~~
+Score 阶段对通过过滤的节点排序。常见插件考虑资源均衡度、镜像本地性、Pod 亲和性和拓扑分布。NodeResourcesFit 支持 LeastAllocated、MostAllocated 和 RequestedToCapacityRatio 等策略；默认倾向把 Pod 放到资源使用比例较低的节点，以减少热点。
 
-常见原因包括：request 超过节点可分配资源、污点未容忍、亲和性无解、PVC 绑定的可用区与节点不匹配、PDB 或配额限制。
+### 优先级与抢占
 
-## 相关组件
+高优先级 Pod 无法调度时，PostFilter 的默认抢占逻辑会在某个节点上选择一组低优先级 Pod 作为牺牲者，尝试腾出足够资源。抢占会选择对集群影响较小的方案，并尽量降低对 PodDisruptionBudget 的违反，但 PDB 不是抢占的硬约束。
 
-kubelet 负责节点上的实际运行；controller-manager 创建 Pod；Cluster Autoscaler 根据 Pending Pod 扩容节点；descheduler 可以在运行后重新平衡。
+抢占成功后，高优先级 Pod 获得 nominated node 标记，牺牲者进入终止流程。最终绑定仍取决于资源是否真正释放；如果其他 Pod 先占了资源，调度可能再次失败并重试。抢占不是即时驱逐，也不保证一定成功。
+
+## 工作机制
+
+1. Pod 被控制器创建，spec.nodeName 为空。
+2. 调度器从队列取出 Pod，执行 PreFilter 并计算调度需求。
+3. 对所有节点执行 Filter，得到可行节点集合。
+4. 若集合为空，执行 PostFilter；默认尝试抢占，仍失败则记录 FailedScheduling 事件。
+5. 对可行节点执行 Score 和 NormalizeScore，选择最高分节点。
+6. Reserve 阶段预留资源，Permit 阶段决定是否放行。
+7. PreBind 完成卷等准备工作，Bind 写入 nodeName。
+8. 目标节点的 kubelet 观察到绑定结果，开始创建 Pod sandbox 和容器。
+
+调度器通常通过 schedulerName 选择调度配置。未指定时使用 default-scheduler。直接设置 nodeName 会绕过调度器，因此不会经过资源过滤和打分，通常只用于调试或特殊场景。
+
+## 关键配置与实践
+
+- **requests 必须准确**：调度完全依赖 requests；设置过低会导致节点超卖，过高会造成虚假容量不足。
+- **Pod overhead**：RuntimeClass 带来的额外开销会计入 Pod 的有效请求，评估容量时不能只看容器 requests。
+- **节点亲和性**：requiredDuringSchedulingIgnoredDuringExecution 是硬约束，preferred 是软约束；后者不保证满足。
+- **污点与容忍**：NoSchedule 阻止新 Pod，PreferNoSchedule 只是倾向，NoExecute 会驱逐不容忍的现有 Pod。
+- **Pod 反亲和**：适合把同一服务的副本打散到不同节点或可用区；大规模集群中应控制标签选择器范围，避免调度开销过高。
+- **拓扑分布**：TopologySpreadConstraints 用 maxSkew 和 whenUnsatisfiable 控制分布；DoNotSchedule 是硬约束，ScheduleAnyway 允许在不满足时仍然调度。
+- **卷拓扑**：使用 WaitForFirstConsumer 的 StorageClass 时，卷绑定会等待 Pod 调度，调度器必须同时满足 PV 的节点亲和性。
+- **专用节点池**：给节点打污点，再为特定工作负载配置容忍和节点亲和性，避免普通 Pod 占用。
+- **优先级**：为关键系统组件设置高优先级 PriorityClass，但不要滥用，否则会频繁触发抢占。
+
+## 常见问题与限制
+
+- **Pod 一直 Pending**：先看 FailedScheduling 事件中的具体原因，再检查 requests、污点、亲和性、PVC 和配额。PDB 不会阻止调度，但配额和准入会。
+- **节点看起来空闲却调度失败**：调度器看 requests 而非实时使用率；可能已有 Pod 预留了资源，或 allocatable 已被系统保留扣减。
+- **亲和性写错**：topologyKey 不存在、标签不匹配或 required 条件互相冲突，都会导致无可行节点。
+- **拓扑分布无法满足**：节点数量、可用区数量或 minDomains 设置与集群实际拓扑不符。
+- **抢占没有解决问题**：牺牲者尚未真正退出，或资源碎片仍不足以容纳 Pod；也可能被更高优先级 Pod 再次抢占。
+- **调度器不是实时负载均衡器**：它不会因为某个节点 CPU 升高就迁移 Pod；运行后的再平衡需要 descheduler 等组件。
+- **大规模集群的调度开销**：Pod 亲和性和大范围拓扑约束会增加 Filter/Score 成本，应控制选择器范围并监控调度延迟。
+- **DaemonSet 与调度**：DaemonSet 控制器为节点生成带节点亲和性的 Pod，仍由调度器绑定；节点污点需要相应容忍。
+
+## 技术关联
+
+controller-manager 中的工作负载控制器创建 Pod，scheduler 为 Pod 选择节点并写入 Binding，kubelet 在目标节点执行 Pod。apiserver 提供 watch 和 Binding 写入，etcd 保存绑定结果。CNI 和 CSI 分别影响网络与存储可用性，卷拓扑会直接参与调度约束。Cluster Autoscaler 观察 Pending Pod 并扩容节点，descheduler 可以在运行后重新平衡。Service 和 EndpointSlice 不参与调度决策，但决定 Pod 就绪后是否接收流量。
 
 ## 参考资料
 
 - [kube-scheduler](https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/)
-- [Assigning Pods to Nodes](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/)`,
-    { docsUrl: 'https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/' },
+- [Scheduling Framework](https://kubernetes.io/docs/concepts/scheduling-eviction/scheduling-framework/)
+- [Assigning Pods to Nodes](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/)
+- [Pod Priority and Preemption](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/)`,
+    {
+      versions: 'Kubernetes 1.28+',
+      docsUrl: 'https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/',
+      version: 2,
+      replacesContentHash: 'd1a3218423d6d34ae7bac29720a9f7099a7bf8e0cae921555392ea83f3483b4c',
+      referenceLinks: [
+        {
+          label: 'Scheduling Framework',
+          url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/scheduling-framework/',
+        },
+        {
+          label: 'Assigning Pods to Nodes',
+          url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/',
+        },
+        {
+          label: 'Pod Priority and Preemption',
+          url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/',
+        },
+        {
+          label: 'Taints and Tolerations',
+          url: 'https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/',
+        },
+      ],
+    },
   ),
   d(
     'k8s-controller-manager',
-    `## 组件定位
+    `## 技术定位
 
-kube-controller-manager 把多个内置控制器编译进同一个进程，负责维持工作负载和集群对象的期望状态。
+kube-controller-manager 是 Kubernetes 控制面中的内置控制器集合。它把数十个控制器编译进同一个进程，通过 apiserver 持续观察对象状态，并把实际状态调和到期望状态。Deployment 创建 ReplicaSet、ReplicaSet 维持 Pod 副本、Node 生命周期管理、EndpointSlice 生成、Job 与 CronJob 推进、Namespace 删除、HPA 扩缩容等，都由这个组件中的不同控制器完成。
 
-## 核心职责
+它不是“一个负责所有事情的控制器”，而是一组共享进程、缓存和客户端的控制循环。每个控制器只关心自己负责的资源类型，通过 API 对象解耦。云厂商相关的负载均衡、路由和节点控制器通常拆到 cloud-controller-manager，调度决策由 kube-scheduler 负责，节点上的实际执行由 kubelet 负责。
 
-- Deployment、ReplicaSet、StatefulSet、DaemonSet、Job 等控制器。
-- Node 生命周期、EndpointSlice、Namespace、ServiceAccount 等控制器。
-- 通过 leader election 保证同一时刻只有一个实例执行控制逻辑。
+## 设计原理
 
-## 工作原理
+### 控制循环
 
-每个控制器 watch 一类资源，把事件放入工作队列，在 reconcile 中比较期望与实际，然后发起最小必要变更。控制器必须幂等：重复执行同一调和不会产生额外副作用。
+控制器遵循 Kubernetes 的声明式控制模型：
 
-## 关键机制
+1. 观察期望状态（spec）和当前状态（status）。
+2. 计算两者差异。
+3. 发起最小必要变更，使当前状态接近期望状态。
+4. 记录事件和状态，等待下一次观察或重试。
 
-- **Informer**：本地缓存和事件分发。
-- **Work queue**：失败重试和限速。
-- **Leader election**：多副本高可用。
-- **OwnerReference**：资源级联删除和归属。
-- **Conditions**：对象状态的可读表达。
+调和必须幂等：同一个对象被重复处理多次，结果应保持一致。控制器不假设事件只到达一次，也不依赖事件顺序；它每次都从缓存中读取最新对象并重新计算。
 
-## 典型场景
+### Informer 与工作队列
 
-- Deployment 副本数不齐：看 Deployment/ReplicaSet 事件和控制器日志。
-- Node 长期 NotReady：检查 node lifecycle controller 和 kubelet 心跳。
-- Job 一直未完成：检查 Pod 失败原因和 backoffLimit。
+控制器通常使用 client-go 的 informer 对 apiserver 做 list-watch，在本地维护资源缓存，并把变更事件分发给事件处理器。事件处理器通常只把对象的 namespace/name 放入工作队列，由工作协程取出后再从缓存读取最新对象。这样即使短时间内收到多次更新，也只会合并处理，避免使用过期对象。
 
-## 常见故障与排查
+工作队列提供去重、限速和重试。调和失败时，对象会按指数退避重新入队；成功时通常不再排队，等待下一次 watch 事件或周期 resync。队列深度、重试次数和调和耗时是判断控制器是否健康的重要指标。
 
-控制器本身故障通常表现为“对象存在但状态不推进”。优先看 controller-manager 日志、leader 状态、RBAC 权限和 webhook 是否阻塞写入。若 apiserver 返回 429 或超时，控制器会退避重试，表现为整体调和不及时。
+### 控制器示例
 
-## 相关组件
+- **Deployment 控制器**：根据 Pod 模板生成 ReplicaSet，管理修订历史和滚动更新。
+- **ReplicaSet 控制器**：统计匹配 selector 的 Pod，创建或删除 Pod 以维持副本数。
+- **StatefulSet 控制器**：按序号管理 Pod、PVC 和稳定网络标识。
+- **DaemonSet 控制器**：为每个符合条件的节点生成 Pod。
+- **Job 与 CronJob 控制器**：跟踪任务完成、失败重试和定时调度。
+- **Node 生命周期控制器**：根据 kubelet 心跳更新 Node 状态，并在节点失联时触发 Pod 驱逐。
+- **EndpointSlice 控制器**：根据 Service selector 和 Pod 就绪状态维护后端切片。
+- **Namespace 控制器**：命名空间删除时清理其下资源。
+- **HPA 控制器**：根据指标计算并修改工作负载副本数。
+- **垃圾回收控制器**：根据 ownerReference 清理失去所有者的对象。
 
-apiserver 提供 watch 和写入；etcd 保存状态；kubelet 上报节点和 Pod 状态；scheduler 负责 Pod 绑定。
+### Leader election
+
+生产环境通常运行多个 controller-manager 副本，但同一时刻只有一个副本作为 leader 执行调和。leader 通过 Lease 对象续约，其他副本处于待命状态。leader 失去续约后会停止工作，新 leader 接管，从而避免多个副本同时修改同一对象造成冲突。
+
+Leader election 依赖 apiserver 和 etcd 的可用性。网络分区、apiserver 高延迟或时钟漂移都可能导致续约失败和 leader 切换。切换期间控制器会短暂停止推进，但已提交的对象状态不会丢失。
+
+## 工作机制
+
+1. controller-manager 启动后加载控制器和共享 informer，建立对 apiserver 的 watch。
+2. 多个副本竞争 Lease，获得租约的副本成为 leader。
+3. 各控制器把关注对象的变更放入工作队列。
+4. 工作协程取出 key，从 informer 缓存读取最新对象。
+5. 控制器比较期望与实际，通过 apiserver 创建、更新或删除对象。
+6. 若写入冲突，控制器重新读取并重试；若失败，按退避策略重新入队。
+7. 控制器更新对象 status 和 events，供用户和其他组件观察。
+
+控制器只与 apiserver 交互，不直接读写 etcd。apiserver 负责认证、授权、准入和持久化；etcd 负责一致性存储。kubelet 上报 Node 和 Pod 状态，scheduler 写入 Pod 绑定，这些状态变化又会成为控制器的输入。
+
+### OwnerReference 与级联删除
+
+控制器创建从属对象时通常写入 ownerReference。Kubernetes 根据 ownerReference 判断归属，并在所有者删除时执行级联删除。Deployment 拥有 ReplicaSet，ReplicaSet 拥有 Pod；删除 Deployment 时，垃圾回收会按传播策略清理下游对象。
+
+foreground 删除会先删除从属对象，再删除所有者；background 删除先删除所有者，再异步清理从属对象；orphan 删除保留从属对象但移除 ownerReference。理解传播策略可以避免误删或残留资源。
+
+## 关键配置与实践
+
+- **leader election**：多副本部署必须启用，并确保各副本能稳定访问 apiserver；单副本部署也应关注租约状态。
+- **RBAC**：controller-manager 使用独立身份，权限缺失会表现为“对象存在但状态不推进”，日志中通常有 forbidden。
+- **准入 webhook**：失败的 webhook 会阻塞控制器写入；应设置合理的 failurePolicy、超时和命名空间豁免。
+- **API 优先级与限流**：大规模集群中 controller-manager 可能触发 apiserver 限流，表现为 429、调和延迟和队列堆积。
+- **节点失联处理**：Node 生命周期控制器会给失联节点打 NoExecute 污点，Pod 在容忍时间结束后被驱逐；容忍时间需要与业务恢复时间匹配。
+- **控制器并发度**：部分控制器支持 concurrent-syncs，提高并发可以加快收敛，但会增加 apiserver 压力。
+- **监控**：关注 leader 状态、workqueue 深度、调和错误率、apiserver 请求延迟和 429 比例，而不是只看进程是否存活。
+
+## 常见问题与限制
+
+- **对象存在但状态不推进**：先确认 controller-manager 是否持有 leader、日志是否有 RBAC forbidden、webhook 是否超时，以及 apiserver 是否限流。
+- **频繁 leader 切换**：apiserver 延迟、网络抖动或 CPU 饥饿会导致续约失败；切换期间调和暂停。
+- **控制器热循环**：持续写入 status 或 spec 会触发自身再次入队，造成 CPU 和 apiserver 压力。
+- **级联删除误伤**：ownerReference 配置错误可能导致删除上层对象时清理了不该清理的资源。
+- **Node 驱逐延迟**：节点失联后 Pod 不会立即迁移，需等待污点容忍和驱逐流程；有状态服务仍需应用层保障。
+- **控制器不是事务系统**：多个对象之间的变更不是原子操作，失败后依靠重试收敛，业务需要容忍中间状态。
+- **云资源不在内置控制器中**：LoadBalancer、路由和部分存储操作由 cloud-controller-manager 或外部控制器完成。
+- **不要直接修改由控制器管理的字段**：手动修改副本数、selector 或 status 可能与控制器冲突，应修改上层声明或使用受支持的接口。
+
+## 技术关联
+
+apiserver 是 controller-manager 唯一的读写入口，etcd 保存集群状态。scheduler 为控制器创建的 Pod 选择节点，kubelet 上报节点与 Pod 状态并执行容器。Deployment、ReplicaSet、StatefulSet、DaemonSet、Job 和 CronJob 的控制器都在 controller-manager 中运行；EndpointSlice 控制器为 Service 维护后端；HPA 控制器调整工作负载副本。cloud-controller-manager 负责云厂商相关的节点、路由和负载均衡控制。垃圾回收器依据 ownerReference 清理级联对象。
 
 ## 参考资料
 
 - [kube-controller-manager](https://kubernetes.io/docs/concepts/overview/components/#kube-controller-manager)
-- [Controllers](https://kubernetes.io/docs/concepts/architecture/controller/)`,
-    { docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kube-controller-manager' },
+- [Controllers](https://kubernetes.io/docs/concepts/architecture/controller/)
+- [Leases](https://kubernetes.io/docs/concepts/architecture/leases/)
+- [Garbage Collection](https://kubernetes.io/docs/concepts/architecture/garbage-collection/)`,
+    {
+      versions: 'Kubernetes 1.28+',
+      docsUrl: 'https://kubernetes.io/docs/concepts/overview/components/#kube-controller-manager',
+      version: 2,
+      replacesContentHash: 'bfe324197d60767d85104185dd2425174f38fc93a3085828b238f6ca8a6cc78a',
+      referenceLinks: [
+        { label: 'Controllers', url: 'https://kubernetes.io/docs/concepts/architecture/controller/' },
+        { label: 'Leases', url: 'https://kubernetes.io/docs/concepts/architecture/leases/' },
+        {
+          label: 'Garbage Collection',
+          url: 'https://kubernetes.io/docs/concepts/architecture/garbage-collection/',
+        },
+      ],
+    },
   ),
   d(
     'k8s-kubelet',
@@ -329,143 +472,210 @@ kubelet 的 Pod sync loop 会对比期望 PodSpec 和实际容器状态，调用
   ),
   d(
     'k8s-pod',
-    `## 资源定义
+    `## 技术定位
 
-Pod 是 Kubernetes 最小的调度和运行单元，包含一个或多个共享网络命名空间和存储卷的容器。
+Pod 是 Kubernetes 中可被调度、部署和替换的最小工作负载单元。它不是“容器的别名”，而是围绕一组需要协同运行的容器建立的运行环境：同一个 Pod 内的容器共享网络命名空间、Pod IP、IPC 命名空间和 Pod 级存储卷，因此可以像同一台主机上的进程一样通过 localhost 通信。
 
-## 解决的问题
+Pod 在技术体系中的位置很特殊：调度器以 Pod 为单位选择节点，kubelet 以 Pod 为单位落实容器，Service 和 EndpointSlice 以 Pod 为后端，Deployment、StatefulSet、DaemonSet 和 Job 也都通过 Pod 模板描述最终运行形态。Pod 是工作负载对象与节点运行时之间的交接点。
 
-Pod 把“必须一起调度、一起共享网络和存储”的容器组合成一个原子单位，同时为上层控制器提供可替换的副本。
+Pod 解决的核心问题是“哪些容器必须一起调度、一起共享环境、一起被替换”。例如 Web 服务与日志收集边车、应用与本地缓存代理，需要共享网络和生命周期；把它们拆成独立 Pod 会失去 localhost 通信和共同调度的保证。反过来，不需要共享环境的组件不应强行塞进同一个 Pod，否则会放大故障域并让扩缩容失去独立性。
 
-## 核心字段
+## 设计原理
 
-- **containers**：主容器列表，包含镜像、命令、端口、资源、探针。
-- **initContainers**：主容器启动前顺序执行的初始化容器。
-- **volumes**：Pod 级存储卷。
-- **restartPolicy**：Always、OnFailure、Never。
-- **serviceAccountName**：Pod 使用的身份。
-- **nodeSelector / affinity / tolerations**：调度约束。
-- **resources.requests/limits**：资源声明。
+### 为什么 Pod 是最小调度单位
 
-## 生命周期
+调度器只处理 Pod，而不是单个容器。一个 Pod 中的所有容器一定落在同一个节点上，这是共享网络和卷的前提。Pod 在调度意义上是原子的，但在运行意义上并非原子：单个容器可能崩溃并由 kubelet 按 restartPolicy 重启，而其他容器继续运行。
 
-Pod 创建后经历 Pending → Running → Succeeded/Failed。容器可能经历 Waiting、Running、Terminated。删除时先发送 SIGTERM，等待 terminationGracePeriodSeconds，再发送 SIGKILL。Pod 重建后 IP 会变化，因此不应把 Pod IP 当作稳定地址。
+### 共享网络
 
-## 配置示例
+kubelet 首先通过 CRI 创建 Pod sandbox，常见实现会启动一个 pause 容器持有网络命名空间。随后业务容器和初始化容器加入该命名空间，因此它们共享同一个 IP 和端口空间。两个容器不能同时监听同一个端口；容器之间访问 localhost 时，实际访问的是同一个网络栈。
 
-~~~yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: web
-  labels:
-    app: web
-spec:
-  containers:
-    - name: web
-      image: nginx:1.27
-      ports:
-        - containerPort: 80
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          cpu: 500m
-          memory: 256Mi
-      readinessProbe:
-        httpGet:
-          path: /
-          port: 80
-        periodSeconds: 5
-~~~
+Pod IP 由 CNI 插件分配，并在 Pod 重建后变化。因此 Pod IP 不能作为稳定服务地址，稳定访问应通过 Service、Headless Service 或 StatefulSet 的稳定网络标识实现。
 
-## 常见问题
+### 共享存储
 
-- 直接管理裸 Pod 缺少自愈和滚动更新能力，生产环境应使用工作负载控制器。
-- 探针配置不当会导致反复重启或流量过早进入。
-- 未设置 request 会让调度和 QoS 失真，节点压力时更容易被驱逐。
-- 容器以 PID 1 运行但不处理信号，会导致优雅终止失效。
+卷定义在 Pod 级别，再由各个容器分别挂载。emptyDir 的生命周期跟随 Pod 而不是容器：容器重启后数据仍在，Pod 被删除后数据丢失。ConfigMap、Secret、PVC 等卷则由各自的后端决定持久性。多个容器可以挂载同一个卷并通过文件系统共享数据，但应用仍需自行处理并发写入和锁。
 
-## 相关资源
+### 容器形态
 
-Deployment、StatefulSet、DaemonSet、Job 都通过 Pod template 创建 Pod；Service 通过标签选择 Pod；EndpointSlice 记录就绪 Pod 地址。
+- **普通容器**：Pod 的主要工作负载，并行启动。
+- **Init Container**：按声明顺序串行执行，全部成功后才启动普通容器；适合初始化数据、等待依赖、修改权限。任一 Init Container 失败时，Pod 会按 restartPolicy 重试。
+- **原生边车容器**：Kubernetes 1.29 进入 Beta、1.33 转为 Stable，通过 initContainers 中的 restartPolicy: Always 声明。它在普通容器之前启动，之后持续运行，并在 Pod 终止时晚于普通容器退出，解决了传统边车启动顺序和退出顺序不可控的问题。
+- **Ephemeral Container**：通过调试接口临时加入运行中的 Pod，用于排障；不参与调度，也不支持探针和资源保证。
+
+## 工作机制
+
+### 创建流程
+
+1. 客户端向 kube-apiserver 提交 Pod 或由控制器创建 Pod。
+2. scheduler 观察到未绑定节点（nodeName 为空）的 Pod，完成过滤和打分后写入 Binding。
+3. 目标节点的 kubelet 观察到 Pod，执行准入检查，调用 CRI 创建 sandbox。
+4. CNI 为 sandbox 配置网络和 IP，CSI 或卷插件挂载存储。
+5. kubelet 按顺序运行 Init Container，再启动普通容器。
+6. kubelet 执行探针并把 Pod 状态、容器状态和条件上报到 apiserver。
+
+### 生命周期与终止
+
+Pod 的 phase 包括 Pending、Running、Succeeded、Failed 和 Unknown。phase 是 Pod 级摘要，不足以描述单个容器；容器还有 Waiting、Running 和 Terminated 三种状态。Pod conditions 中的 PodScheduled、Initialized、ContainersReady 和 Ready 更适合判断具体阶段。
+
+删除 Pod 时，apiserver 先设置 deletionTimestamp。EndpointSlice 控制器会把该 Pod 标记为 terminating 或从就绪端点移除；kubelet 执行 preStop 钩子，然后向容器主进程发送 SIGTERM，等待 terminationGracePeriodSeconds，仍未退出则发送 SIGKILL。若容器以 PID 1 运行却不转发信号，SIGTERM 可能无效，最终只能等待强制杀死。
+
+### 探针
+
+- **readinessProbe**：失败时 Pod 从 Service 的就绪端点移除，但容器不重启；用于控制是否接收流量。
+- **livenessProbe**：失败时 kubelet 重启容器；用于处理进程仍在但无法恢复的情况。
+- **startupProbe**：启动成功前抑制 liveness 和 readiness 探针，适合启动时间较长的应用。
+
+探针的 initialDelaySeconds、periodSeconds、timeoutSeconds、failureThreshold 和 successThreshold 会共同决定判定时间。探针过严会把正常启动或短暂抖动误判为故障，过松则会延长故障流量时间。
+
+## 关键配置与实践
+
+- **resources.requests**：调度器据此选择节点；requests 过低会导致节点超卖，过高会浪费容量。
+- **resources.limits**：限制容器可用资源；CPU 超限会被节流，内存超限通常触发 OOMKill。
+- **QoS**：所有容器都设置 requests 且等于 limits 时为 Guaranteed；完全未设置时为 BestEffort；其余为 Burstable。节点压力驱逐时，BestEffort 通常最先被驱逐。
+- **terminationGracePeriodSeconds**：应覆盖应用处理未完成请求的最长时间；preStop 的执行时间也计入该窗口。
+- **serviceAccountName**：决定 Pod 访问 API 的身份，应按最小权限配置。
+- **securityContext**：可设置运行用户、只读根文件系统、能力集和 seccomp 等；Pod 级配置可被容器级覆盖。
+
+生产环境通常不直接创建裸 Pod，而是通过 Deployment、StatefulSet、DaemonSet 或 Job 管理。裸 Pod 缺少副本维持、滚动更新和自愈能力，节点故障后也不会自动重建。
+
+## 常见问题与限制
+
+- **把 Pod 当成稳定主机**：Pod 重建后 IP、名称（除非由 StatefulSet 管理）和所在节点都可能变化。
+- **探针配置错误**：readiness 过严导致“有 Pod 但没流量”；liveness 过严导致反复重启；startup 缺失导致慢启动应用被提前杀死。
+- **忽略 PID 1 信号处理**：应用不处理 SIGTERM 时会一直等到宽限期结束，造成发布或缩容变慢。
+- **端口冲突**：同一 Pod 内共享网络命名空间，多个容器不能监听同一端口。
+- **hostNetwork 的副作用**：使用宿主机网络后 Pod 没有独立 IP，端口直接占用节点端口，调度和隔离假设都会改变。
+- **emptyDir 被误当持久存储**：Pod 删除后数据消失；需要持久化时应使用 PVC。
+- **缺少 requests**：调度器无法准确放置 Pod，QoS 也会下降，节点压力时更易被驱逐。
+
+## 技术关联
+
+Pod 由 ReplicaSet 维持副本，Deployment 通过 ReplicaSet 管理无状态 Pod，StatefulSet 提供稳定序号和存储，DaemonSet 在每个节点运行一个 Pod，Job 和 CronJob 管理批处理任务。Service 通过标签选择就绪 Pod，EndpointSlice 保存后端地址。kubelet 通过 CRI 创建 sandbox 和容器，通过 CNI 配置网络，通过 CSI 挂载存储。scheduler 决定 Pod 落在哪个节点，controller-manager 中的控制器决定创建多少 Pod、何时替换 Pod。
 
 ## 参考资料
 
 - [Pods](https://kubernetes.io/docs/concepts/workloads/pods/)
-- [Pod Lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/)`,
-    { docsUrl: 'https://kubernetes.io/docs/concepts/workloads/pods/' },
+- [Pod Lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/)
+- [Sidecar Containers](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)
+- [Configure Liveness, Readiness and Startup Probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)
+- [Pod Quality of Service Classes](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/)`,
+    {
+      versions: 'Kubernetes 1.28+；原生边车容器 1.29 Beta、1.33 Stable',
+      docsUrl: 'https://kubernetes.io/docs/concepts/workloads/pods/',
+      version: 2,
+      replacesContentHash: '5e911f0e59c21e80cd187baf2ce022fc4c27e36b0b232c361cd1fb0277568e84',
+      referenceLinks: [
+        { label: 'Pod Lifecycle', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/' },
+        { label: 'Sidecar Containers', url: 'https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/' },
+        {
+          label: 'Liveness, Readiness and Startup Probes',
+          url: 'https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/',
+        },
+        { label: 'Pod QoS Classes', url: 'https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/' },
+      ],
+    },
   ),
   d(
     'k8s-deployment',
-    `## 资源定义
+    `## 技术定位
 
-Deployment 是管理无状态应用的控制器，声明 Pod 模板、副本数和更新策略。
+Deployment 是 Kubernetes 管理无状态应用的标准工作负载控制器。它声明“期望运行多少个 Pod、Pod 长什么样、升级时如何替换”，并把副本维持和滚动发布交给 ReplicaSet 执行。Deployment 不直接管理 Pod，而是管理 ReplicaSet；每个 Pod 模板版本通常对应一个 ReplicaSet，Pod 则带有 pod-template-hash 标签以标明归属。
 
-## 解决的问题
+它适合可以任意替换副本、实例之间不保存本地状态的业务，例如无状态 Web 服务、API 网关和内部微服务。需要稳定网络标识或每副本独立存储时应使用 StatefulSet；需要在每个节点运行一份时应使用 DaemonSet；需要一次性任务时应使用 Job 或 CronJob。
 
-它让应用发布变成可回滚、可观察的滚动过程，而不是手工替换 Pod。
+## 设计原理
 
-## 核心字段
+### 三层对象关系
 
-- **replicas**：期望副本数。
-- **selector**：选择由该 Deployment 管理的 Pod。
-- **template**：Pod 模板。
-- **strategy.rollingUpdate.maxSurge / maxUnavailable**：滚动更新节奏。
-- **revisionHistoryLimit**：保留的历史 ReplicaSet 数量。
-- **progressDeadlineSeconds**：发布超时判定。
+Deployment → ReplicaSet → Pod 是理解滚动更新的关键。Deployment 保存期望状态和发布策略，ReplicaSet 负责把当前副本数调整到期望值，Pod 才是实际运行单元。每次修改 Pod 模板都会生成新的 ReplicaSet；旧 ReplicaSet 通常缩容到 0 但保留在历史中，以便回滚。
 
-## 生命周期
+Pod 模板的哈希会写入 pod-template-hash 标签，并附加到 ReplicaSet 的 selector 和 Pod 标签上。这样即使多个 ReplicaSet 的 Pod 具有相同的业务标签，也能通过哈希区分归属，避免旧 ReplicaSet 误删新 Pod。
 
-Deployment 创建 ReplicaSet，ReplicaSet 创建 Pod。更新镜像或模板时，Deployment 创建新 ReplicaSet，按策略扩新缩旧。回滚通过切换到历史 ReplicaSet 完成。
+### 滚动更新
 
-## 配置示例
+RollingUpdate 通过 maxSurge 和 maxUnavailable 控制节奏：
 
-~~~yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: web
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-  template:
-    metadata:
-      labels:
-        app: web
-    spec:
-      containers:
-        - name: web
-          image: nginx:1.27
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 80
-~~~
+- **maxSurge**：允许超出期望副本数的 Pod 数量，可以是整数或百分比。
+- **maxUnavailable**：更新过程中允许不可用的 Pod 数量，可以是整数或百分比。
 
-## 常见问题
+两者不能同时为 0，否则无法推进。默认值都是 25%。maxSurge 越大，发布越快但资源峰值越高；maxUnavailable 越大，发布越快但容量下降越明显。关键服务通常设置 maxUnavailable: 0，并保留一定 maxSurge，同时用 PodDisruptionBudget 约束自愿中断。
 
-- 新 Pod 一直不就绪会导致滚动更新卡住；先看 readinessProbe 和事件。
-- maxUnavailable 过大可能造成容量不足；关键服务建议配 PDB。
-- selector 是不可变字段，创建后修改会失败。
-- 只改镜像标签但标签指向同一镜像，不会触发预期发布。
+Recreate 策略会先删除全部旧 Pod，再创建新 Pod，适用于不能同时运行两个版本的场景，但必然产生停机。
 
-## 相关资源
+### 进度与可用性
 
-ReplicaSet 负责副本维持；Service/EndpointSlice 按标签选择 Pod；HPA 调整 Deployment 的副本数；PDB 限制自愿中断。
+Deployment 通过 conditions 暴露状态。Progressing 表示控制器是否在推进发布；Available 表示可用副本是否达到期望。progressDeadlineSeconds 默认 600 秒，超过该时间没有进展时 Progressing 会变为 False，reason 为 ProgressDeadlineExceeded。这个超时只报告问题，不会自动回滚；需要人工检查并执行 rollout undo。
+
+minReadySeconds 要求新 Pod 在就绪后继续稳定运行一段时间才计入可用，能减少“刚就绪就崩溃”被误判为成功的情况。observedGeneration 用于判断控制器是否已经处理了最新一次 spec 变更。
+
+## 工作机制
+
+### 创建与扩缩容
+
+1. Deployment 控制器计算当前 Pod 模板的哈希，查找对应的 ReplicaSet。
+2. 若不存在，则创建新 ReplicaSet，并写入 revision 注解。
+3. ReplicaSet 控制器根据 selector 统计 Pod，创建或删除 Pod 以达到 replicas。
+4. 新 Pod 通过调度、拉镜像、启动容器和 readinessProbe 后就绪。
+5. Deployment 根据就绪数量继续调整新旧 ReplicaSet 的副本数，直到旧副本为 0。
+
+扩缩容只修改 replicas 时通常不会创建新 ReplicaSet；HPA 也是通过修改 Deployment 的 replicas 来工作。若同时修改副本数和模板，控制器会先按新模板推进发布，再调整规模。
+
+### 更新与回滚
+
+修改 Pod 模板中的镜像、环境变量、资源或标签都会触发新 ReplicaSet。仅修改 replicas、minReadySeconds 或策略字段不一定产生新修订。镜像标签不变但实际 digest 变化时，Pod 模板文本没有变化，因此不会自动触发发布；应使用不可变标签、显式 digest，或执行 rollout restart 触发模板注解变化。
+
+回滚通过 rollout undo 切换到历史 ReplicaSet。回滚本身会生成新的修订记录，而不是删除当前修订。revisionHistoryLimit 默认保留 10 个旧 ReplicaSet；设置过小会导致无法回滚到更早版本，设置过大则会保留大量已缩容对象。
+
+### 暂停与恢复
+
+paused: true 可以暂停发布，使多次模板修改合并为一次滚动；恢复后控制器按最新模板推进。暂停期间扩缩容仍可生效，但新修订不会立即展开。该能力适合批量调整配置，不能替代发布审批。
+
+## 关键配置与实践
+
+- **selector**：必须匹配 template.metadata.labels，且创建后不可修改。多个 Deployment 的 selector 不应重叠，否则会争抢同一批 Pod。
+- **readinessProbe**：滚动更新以 Pod 就绪为前提。探针缺失或过松会让未真正可用的实例提前接收流量。
+- **minReadySeconds**：给新 Pod 一段稳定观察期，避免瞬时就绪被计入可用。
+- **strategy**：无状态在线服务通常使用 RollingUpdate；必须独占版本的场景才使用 Recreate。
+- **revisionHistoryLimit**：根据回滚窗口设置，不要为了“干净”设为 0。
+- **progressDeadlineSeconds**：应大于应用最慢启动时间与探针判定时间之和，否则会把正常慢启动误报为失败。
+- **PDB**：限制节点维护或驱逐时的自愿中断，但它不能阻止滚动更新本身；Deployment 的 maxUnavailable 与 PDB 需要一起评估。
+
+## 常见问题与限制
+
+- **发布卡住**：新 Pod 无法调度、镜像拉取失败、readinessProbe 一直失败或配额不足都会让旧副本无法继续缩减。应先看 Deployment conditions、ReplicaSet 事件和 Pod 状态。
+- **误以为超时会自动回滚**：progressDeadlineSeconds 只标记失败，不会自动恢复旧版本。
+- **selector 冲突**：手工创建的 Pod 或其他控制器管理的 Pod 若带有相同标签，可能被 ReplicaSet 计入或删除。
+- **滚动更新没有真正发生**：只改了相同镜像标签，Pod 模板未变化；需要使用 digest、不可变标签或 rollout restart。
+- **容量规划错误**：maxSurge 会临时增加 Pod 数量，节点资源和配额必须能容纳峰值。
+- **把有状态服务放进 Deployment**：副本之间共享身份或本地数据时会出问题，应使用 StatefulSet。
+- **忽略终止过程**：滚动更新会删除旧 Pod，应用若不处理 SIGTERM，会拖长发布并造成请求失败。
+- **回滚不等于数据回滚**：Deployment 只能回滚 Pod 模板，数据库迁移和外部配置变更需要单独处理。
+
+## 技术关联
+
+Deployment 由 kube-controller-manager 中的 Deployment 控制器驱动，后者创建并管理 ReplicaSet；ReplicaSet 再创建 Pod。Service 通过标签选择 Deployment 创建的 Pod，EndpointSlice 记录就绪后端。HPA 修改 Deployment 的副本数，PDB 约束驱逐时的可用副本。scheduler 为每个新 Pod 选择节点，kubelet 负责实际运行。Ingress 或 Gateway 通常把流量转发到 Service，而不是直接指向 Deployment。
 
 ## 参考资料
 
-- [Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)`,
-    { docsUrl: 'https://kubernetes.io/docs/concepts/workloads/controllers/deployment/' },
+- [Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
+- [ReplicaSet](https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/)
+- [Specifying a Disruption Budget for your Application](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)
+- [Horizontal Pod Autoscaling](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/)`,
+    {
+      versions: 'Kubernetes 1.28+',
+      docsUrl: 'https://kubernetes.io/docs/concepts/workloads/controllers/deployment/',
+      version: 2,
+      replacesContentHash: '3784a8b6a3b9d237979eb5b1b416b80ca90c343ea4154ac19ccfab826c8ad6fb',
+      referenceLinks: [
+        { label: 'ReplicaSet', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/' },
+        { label: 'PodDisruptionBudget', url: 'https://kubernetes.io/docs/tasks/run-application/configure-pdb/' },
+        {
+          label: 'Horizontal Pod Autoscaling',
+          url: 'https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/',
+        },
+      ],
+    },
   ),
   d(
     'k8s-replicaset',
@@ -635,59 +845,115 @@ Node 对象决定覆盖范围；kubelet 运行 Pod；Prometheus 等监控系统�
   ),
   d(
     'k8s-service',
-    `## 资源定义
+    `## 技术定位
 
-Service 为一组 Pod 提供稳定的虚拟 IP、DNS 名称和负载均衡。
+Service 为一组 Pod 提供稳定的虚拟 IP、DNS 名称和端口，是 Kubernetes 服务发现与四层负载均衡的抽象层。Pod 会因发布、驱逐或节点故障而重建，IP 随之变化；调用方不应直接依赖 Pod IP。Service 用标签选择后端，并把稳定地址与不断变化的 Pod 集合解耦。
 
-## 解决的问题
+Service 位于 Pod 与上层入口之间：集群内客户端通过 ClusterIP 或 DNS 访问 Service，集群外流量可通过 NodePort 或 LoadBalancer 进入，七层流量则通常由 Ingress 或 Gateway 转发到 Service。Service 本身不运行代理进程，数据面由 kube-proxy、eBPF CNI 或云负载均衡器实现。
 
-Pod 是临时对象，IP 会变化。Service 通过标签选择后端 Pod，让调用方使用稳定地址。
+## 设计原理
 
-## 核心字段
+### 虚拟 IP 与数据面
 
-- **selector**：选择后端 Pod。
-- **ports.port / targetPort**：Service 端口和后端容器端口。
-- **type**：ClusterIP、NodePort、LoadBalancer、ExternalName。
-- **clusterIP: None**：Headless Service，直接返回 Pod 地址。
-- **sessionAffinity**：会话保持。
-- **externalTrafficPolicy**：保留源 IP 或减少一跳。
+ClusterIP 是分配自 Service CIDR 的虚拟地址，通常不绑定到任何网卡，因此不能像普通主机地址那样直接 ping 通。访问 ClusterIP 时，节点上的转发规则会把连接重定向到某个后端 Pod。常见实现包括 iptables、IPVS 和 eBPF；它们监听 Service 与 EndpointSlice 的变化并更新数据面。
 
-## 生命周期
+kube-proxy 是常见实现之一，但并非唯一实现。使用 eBPF 数据面的 CNI 可以在内核中直接完成 Service 转发，从而替代 kube-proxy。理解这一点很重要：Service 是 API 对象和转发语义，kube-proxy 只是可选的数据面实现。
 
-Service 创建后获得 ClusterIP。EndpointSlice 控制器根据 selector 和 Pod 就绪状态维护后端地址。kube-proxy 监听变化并更新节点转发规则。Pod 重建后地址自动更新，调用方无感知。
+### EndpointSlice
 
-## 配置示例
+EndpointSlice 控制器根据 Service 的 selector 选择 Pod，并把就绪后端的地址和端口写入 EndpointSlice。每个切片通过 kubernetes.io/service-name 标签关联 Service，默认每个切片最多包含 100 个端点。相比单个庞大的 Endpoints 对象，分片降低了大规模集群的更新和 watch 压力。
 
-~~~yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: web
-spec:
-  selector:
-    app: web
-  ports:
-    - port: 80
-      targetPort: 8080
-  type: ClusterIP
-~~~
+每个端点除了地址和端口，还带有 conditions：ready 表示是否可接收流量，serving 表示是否正在提供服务，terminating 表示是否正在终止。默认只有 ready 端点会参与转发；publishNotReadyAddresses: true 可以把未就绪地址也发布出去，常用于 Headless Service 的成员发现。
 
-## 常见问题
+### 服务类型
 
-- selector 与 Pod 标签不一致，EndpointSlice 为空。
-- targetPort 写错，连接被拒绝。
-- readinessProbe 失败时 Pod 不会进入 ready 端点，表现为“有 Pod 但没流量”。
-- Headless Service 不提供负载均衡，客户端需要自己处理地址列表。
+- **ClusterIP**：默认类型，仅集群内可访问，获得虚拟 IP 和 DNS 名称。
+- **NodePort**：在每个节点上分配一个端口，把该端口流量转发到 Service；端口范围默认 30000–32767。
+- **LoadBalancer**：在 NodePort 基础上请求外部负载均衡器，具体行为由云厂商或控制器实现。
+- **ExternalName**：不分配 ClusterIP，通过 DNS CNAME 指向外部域名，仅做名称映射。
 
-## 相关资源
+clusterIP: None 创建 Headless Service，不分配虚拟 IP。DNS 直接返回后端 Pod 地址，客户端自行选择连接哪一个，适合 StatefulSet 成员发现和需要自定义负载均衡的场景。
 
-Pod 是后端；EndpointSlice 保存地址；kube-proxy 实现转发；Ingress/Gateway 提供七层入口；CoreDNS 提供 Service 域名。
+### 流量策略
+
+- **internalTrafficPolicy**：控制集群内流量是否只转发到本节点 Pod。Local 可减少跨节点跳转，但本节点没有后端时连接会失败。
+- **externalTrafficPolicy**：控制 NodePort 和 LoadBalancer 流量的节点范围。Cluster 允许任意节点转发，通常会发生源地址 SNAT；Local 只转发到本节点 Pod，可保留客户端源 IP，但需要外部负载均衡器把流量送到有后端的节点。
+
+## 工作机制
+
+### 创建与端点维护
+
+1. 创建 Service 后，控制器分配 ClusterIP（Headless 除外）。
+2. EndpointSlice 控制器监听 Service 与 Pod，按 selector 计算后端集合。
+3. Pod 通过 readinessProbe 后，端点 condition.ready 变为 true。
+4. 数据面组件监听 EndpointSlice 变化，更新节点转发规则。
+5. CoreDNS 根据 Service 生成 DNS 记录，集群内可通过名称访问。
+
+Service 没有 selector 时不会自动生成 EndpointSlice，需要手工维护 Endpoints 或 EndpointSlice，或由 Operator 管理。选择器与 Pod 标签不一致时，端点集合为空，连接会失败而不是自动回退。
+
+### DNS 与 Headless
+
+普通 Service 的 DNS 名称形如 web.default.svc.cluster.local，解析到 ClusterIP。Headless Service 解析到一组 Pod IP；当端口有名称时，还会生成 SRV 记录。StatefulSet 的每个 Pod 还可通过 pod-name.service-name 形式的稳定域名访问。
+
+客户端对 Headless Service 的地址列表通常需要自行做健康检查和负载均衡。DNS 缓存、连接池和长连接会让 Pod 变更不能立即反映到客户端，因此 Headless 并不等于自动高可用。
+
+### 端口与协议
+
+port 是 Service 暴露的端口，targetPort 是后端容器端口，默认与 port 相同。多端口 Service 必须为每个端口命名，名称用于 DNS SRV 记录和避免歧义。协议默认 TCP，也支持 UDP 和 SCTP。appProtocol 可提示上层实现使用 HTTP、gRPC 等应用层协议，但 Service 本身仍按四层转发。
+
+sessionAffinity: ClientIP 可以把同一客户端 IP 的请求固定到同一后端，默认超时 10800 秒。它依赖源 IP，经过 NAT 或代理后可能失效，也不适用于需要真正会话状态的场景。
+
+## 关键配置与实践
+
+- **selector 与 Pod 标签保持一致**：这是“Service 存在但没有后端”的最常见原因。
+- **正确配置 readinessProbe**：未就绪 Pod 不会进入转发集合；探针过松会让故障实例继续接收流量。
+- **targetPort 使用命名端口**：容器端口变更时只需改 Pod 模板，Service 无需同步修改。
+- **避免 ClusterIP 被当作真实主机**：不要对 ClusterIP 做 ICMP 健康检查，也不要假设它能被外部直接路由。
+- **长连接与滚动更新**：Service 只在建立连接时选择后端，长连接不会因 Pod 终止自动迁移；应用需要处理连接断开和重连。
+- **NodePort/LoadBalancer 的源 IP**：需要保留客户端 IP 时评估 externalTrafficPolicy: Local 及外部负载均衡器的健康检查配置。
+- **PDB 与端点移除**：Pod 进入终止流程后会从就绪端点移除，但已有连接仍可能短暂存在，应用应配合优雅终止。
+
+## 常见问题与限制
+
+- **EndpointSlice 为空**：selector 不匹配、Pod 未就绪、命名空间不一致或 Service 没有 selector 且未手工维护端点。
+- **有 Pod 但没流量**：readinessProbe 失败、端口名不匹配或 NetworkPolicy 阻断了流量。
+- **连接被拒绝**：targetPort 与实际监听端口不一致，或后端只监听 127.0.0.1。
+- **Headless 被误解为负载均衡**：Headless 只返回地址列表，不提供虚拟 IP 和自动选路。
+- **会话保持不可靠**：ClientIP 亲和依赖源地址，经过 NAT、Ingress 或服务网格后可能失效。
+- **LoadBalancer 行为不一致**：地址分配、健康检查、跨可用区流量和源 IP 保留都取决于具体实现。
+- **ClusterIP 不可 ping**：虚拟 IP 由转发规则实现，ICMP 行为依数据面而异，不能作为可用性判断依据。
+- **Service 不是七层代理**：路径路由、TLS 终止、灰度发布应使用 Ingress、Gateway API 或服务网格。
+
+## 技术关联
+
+Pod 是 Service 的后端，Service 通过 selector 选择就绪 Pod。EndpointSlice 保存后端地址和端口，是数据面的实际上游数据。kube-proxy 或 eBPF CNI 实现 ClusterIP、NodePort 等转发语义；CoreDNS 提供 Service 域名解析。Ingress 和 Gateway 提供七层入口并转发到 Service。NetworkPolicy 决定哪些 Pod 可以访问 Service。Deployment、StatefulSet 和 DaemonSet 创建的 Pod 都可以成为 Service 后端。
 
 ## 参考资料
 
 - [Service](https://kubernetes.io/docs/concepts/services-networking/service/)
-- [EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)`,
-    { docsUrl: 'https://kubernetes.io/docs/concepts/services-networking/service/' },
+- [EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)
+- [DNS for Services and Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/)
+- [Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/)`,
+    {
+      versions: 'Kubernetes 1.28+',
+      docsUrl: 'https://kubernetes.io/docs/concepts/services-networking/service/',
+      version: 2,
+      replacesContentHash: 'f543df9d2761736fabe6dc64131dd18c4c91432f6b7fc9b824a0ef71b2fda409',
+      referenceLinks: [
+        {
+          label: 'EndpointSlices',
+          url: 'https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/',
+        },
+        {
+          label: 'DNS for Services and Pods',
+          url: 'https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/',
+        },
+        {
+          label: 'Virtual IPs and Service Proxies',
+          url: 'https://kubernetes.io/docs/reference/networking/virtual-ips/',
+        },
+      ],
+    },
   ),
   d(
     'k8s-endpointslice',

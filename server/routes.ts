@@ -390,7 +390,7 @@ const techMoveSchema = z.object({
 
 const techArchiveSchema = z.object({ archived: z.boolean() });
 const techVerifySchema = z.object({
-  version: z.string().trim().max(120).optional().nullable(),
+  version: z.string().trim().min(1).max(120),
 });
 
 const techRelationSchema = z.object({

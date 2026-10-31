@@ -633,6 +633,13 @@ const kubernetesRelations: SeedRelation[] = [
   { id: 'rel-k8s-cp-cm', source: 'k8s-control-plane', target: 'k8s-controller-manager', relationType: 'contains' },
   { id: 'rel-k8s-api-etcd', source: 'k8s-apiserver', target: 'k8s-etcd', relationType: 'depends_on', description: 'API Server 是唯一直接读写 etcd 的控制面组件。' },
   { id: 'rel-k8s-sched-api', source: 'k8s-scheduler', target: 'k8s-apiserver', relationType: 'depends_on' },
+  {
+    id: 'rel-k8s-cm-api',
+    source: 'k8s-controller-manager',
+    target: 'k8s-apiserver',
+    relationType: 'depends_on',
+    description: 'controller-manager 只通过 API Server 读写集群状态，不直接访问 etcd。',
+  },
   { id: 'rel-k8s-kubelet-cri', source: 'k8s-kubelet', target: 'k8s-cri', relationType: 'depends_on', description: 'kubelet 通过 CRI 调用容器运行时。' },
   { id: 'rel-k8s-cri-containerd', source: 'k8s-cri', target: 'k8s-containerd', relationType: 'implements' },
   { id: 'rel-k8s-containerd-oci', source: 'k8s-containerd', target: 'k8s-oci', relationType: 'implements', description: 'containerd 拉取并运行 OCI 镜像。' },
@@ -643,7 +650,27 @@ const kubernetesRelations: SeedRelation[] = [
   { id: 'rel-k8s-cron-job', source: 'k8s-cronjob', target: 'k8s-job', relationType: 'contains' },
   { id: 'rel-k8s-pod-runtime', source: 'k8s-pod', target: 'k8s-container-runtime', relationType: 'depends_on' },
   { id: 'rel-k8s-service-eps', source: 'k8s-service', target: 'k8s-endpointslice', relationType: 'depends_on' },
-  { id: 'rel-k8s-service-proxy', source: 'k8s-service', target: 'k8s-kube-proxy', relationType: 'depends_on' },
+  {
+    id: 'rel-k8s-service-pod',
+    source: 'k8s-service',
+    target: 'k8s-pod',
+    relationType: 'related',
+    description: 'Service 通过 selector 选择就绪 Pod，并由 EndpointSlice 维护后端地址。',
+  },
+  {
+    id: 'rel-k8s-service-proxy',
+    source: 'k8s-service',
+    target: 'k8s-kube-proxy',
+    relationType: 'related',
+    description: 'kube-proxy 是 Service 的一种数据面实现，eBPF CNI 等实现可以替代它。',
+  },
+  {
+    id: 'rel-k8s-cm-deploy',
+    source: 'k8s-controller-manager',
+    target: 'k8s-deployment',
+    relationType: 'related',
+    description: 'Deployment 控制器运行在 kube-controller-manager 中，通过 ReplicaSet 调和副本。',
+  },
   { id: 'rel-k8s-ingress-service', source: 'k8s-ingress', target: 'k8s-service', relationType: 'depends_on' },
   { id: 'rel-k8s-gateway-ingress', source: 'k8s-gateway-api', target: 'k8s-ingress', relationType: 'alternative', description: 'Gateway API 是 Ingress 的演进方向。' },
   { id: 'rel-k8s-calico-cni', source: 'k8s-calico', target: 'k8s-cni', relationType: 'implements' },
@@ -1444,6 +1471,70 @@ export function seedTemplateRelations(template: TechTemplate): number {
   return inserted;
 }
 
+/**
+ * P5.4 relation corrections. Only the exact seeded tuple is touched, so a
+ * relation the user deleted, recreated or otherwise changed is left alone.
+ * Every other relation row and all node links are preserved.
+ */
+const P54_RELATION_CORRECTIONS: Array<{
+  id: string;
+  source: string;
+  target: string;
+  fromType: string;
+  toType: string;
+  description: string;
+}> = [
+  {
+    id: 'rel-k8s-service-proxy',
+    source: 'k8s-service',
+    target: 'k8s-kube-proxy',
+    fromType: 'depends_on',
+    toType: 'related',
+    description: 'kube-proxy 是 Service 的一种数据面实现，eBPF CNI 等实现可以替代它。',
+  },
+];
+
+export function migrateP54Relations(): number {
+  const timestamp = nowIso();
+  let changed = 0;
+  for (const correction of P54_RELATION_CORRECTIONS) {
+    const row = db
+      .prepare(
+        `SELECT source_node_id, target_node_id, relation_type, description
+         FROM tech_relations WHERE id = ?`,
+      )
+      .get(correction.id) as
+      | {
+          source_node_id: string;
+          target_node_id: string;
+          relation_type: string;
+          description: string | null;
+        }
+      | undefined;
+    if (
+      !row ||
+      row.source_node_id !== correction.source ||
+      row.target_node_id !== correction.target ||
+      row.relation_type !== correction.fromType
+    ) {
+      continue;
+    }
+    changed += db
+      .prepare(
+        `UPDATE tech_relations
+         SET relation_type = ?,
+             description = CASE
+               WHEN description IS NULL OR TRIM(description) = '' THEN ?
+               ELSE description
+             END,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(correction.toType, correction.description, timestamp, correction.id).changes;
+  }
+  return changed;
+}
+
 export function seedTechnologyTemplates(): void {
   for (const template of TECH_TEMPLATES) {
     const applied = db.prepare('SELECT 1 FROM tech_seed WHERE key = ?').get(template.key);
@@ -1462,6 +1553,12 @@ export function seedTechnologyTemplates(): void {
   // A template applied in an earlier release may still miss a cross-domain
   // relation whose target was seeded later. Re-checking is idempotent.
   for (const template of TECH_TEMPLATES) seedTemplateRelations(template);
+  try {
+    const changed = migrateP54Relations();
+    if (changed > 0) console.log(`[tech] corrected ${changed} relation(s) for P5.4`);
+  } catch (error) {
+    console.error('[tech] failed to migrate P5.4 relations', error);
+  }
   // Backfill knowledge content for databases created before P5.2. This only
   // fills empty columns and is tracked per node in tech_content_seed.
   try {

@@ -845,6 +845,12 @@ export interface NodeInput {
 export function createNode(domainId: string, input: NodeInput): TechNode {
   const domain = requireDomain(domainId);
   if (domain.status !== 'active') throw new TechRequestError('不能向已归档的技术领域添加节点');
+  if (input.contentStatus === 'complete') {
+    throw new TechRequestError('“已完善”只能通过验证操作设置，请先保存草稿', 400);
+  }
+  if (input.verifiedVersion !== undefined && input.verifiedVersion !== null && input.verifiedVersion.trim()) {
+    throw new TechRequestError('验证版本只能通过验证操作写入', 400);
+  }
   const parentId = input.parentId ?? null;
   assertParent(domainId, parentId);
   assertSiblingName(domainId, parentId, input.name.trim());
@@ -905,12 +911,17 @@ export function updateNode(
   input: Partial<Omit<NodeInput, 'parentId'>>,
 ): TechNode {
   const existing = requireNode(id);
+  if (input.contentStatus === 'complete') {
+    throw new TechRequestError('“已完善”只能通过验证操作设置', 400);
+  }
+  if (input.verifiedVersion !== undefined) {
+    throw new TechRequestError('验证版本只能通过验证操作写入', 400);
+  }
   if (input.name && input.name.trim().toLowerCase() !== existing.name.toLowerCase()) {
     assertSiblingName(existing.domain_id, existing.parent_id, input.name.trim(), id);
   }
   const timestamp = nowIso();
-  const markdownProvided = input.contentMarkdown !== undefined;
-  const nextMarkdown = markdownProvided
+  const nextMarkdown = input.contentMarkdown !== undefined
     ? hasMarkdownContent(input.contentMarkdown)
       ? input.contentMarkdown!
       : null
@@ -923,37 +934,21 @@ export function updateNode(
     nextContentStatus = 'missing';
   } else if (nextContentStatus === 'missing') {
     nextContentStatus = 'draft';
-  } else if (
-    markdownProvided &&
-    markdownChanged &&
-    nextContentStatus === 'complete' &&
-    input.contentStatus === undefined
-  ) {
-    // Editing a verified document invalidates the verification. Keep the old
-    // verification timestamp as history, but move the status to draft.
+  } else if (markdownChanged && existing.content_status === 'complete') {
+    // Editing a verified document invalidates the current verification. Keep
+    // the verification timestamp/version as history, but force the status back
+    // to draft so the new body can never be presented as verified.
     nextContentStatus = 'draft';
   }
-  const nextVerifiedVersion =
-    input.verifiedVersion !== undefined
-      ? input.verifiedVersion?.trim() || null
-      : existing.verified_version;
-  const enteredVerification =
-    input.contentStatus === 'complete' &&
-    (existing.content_status !== 'complete' || nextVerifiedVersion !== existing.verified_version);
-  // A completed document needs a verification record. Use the version the
-  // author says they checked; if none was provided, keep the previous one.
-  const nextVerifiedAt =
-    nextContentStatus === 'complete'
-      ? enteredVerification
-        ? timestamp
-        : existing.content_verified_at ?? (input.contentStatus === 'complete' ? timestamp : null)
-      : existing.content_verified_at;
+  // Verification metadata is only writable through verifyNodeContent. A normal
+  // PATCH leaves the previous record untouched as history.
+  const nextVerifiedVersion = existing.verified_version;
+  const nextVerifiedAt = existing.content_verified_at;
   const contentChanged =
     markdownChanged ||
     input.contentStatus !== undefined ||
     input.contentSource !== undefined ||
-    input.applicableVersions !== undefined ||
-    input.verifiedVersion !== undefined;
+    input.applicableVersions !== undefined;
   db.prepare(
     `UPDATE tech_nodes SET
       name = ?, node_type = ?, summary = ?, description = ?, technical_role = ?, core_principle = ?,
@@ -1014,8 +1009,11 @@ export function verifyNodeContent(
   if (!hasMarkdownContent(existing.content_markdown)) {
     throw new TechRequestError('没有文档内容，无法验证', 400);
   }
+  const version = input.version?.trim();
+  if (!version) {
+    throw new TechRequestError('验证时必须填写所依据的版本', 400);
+  }
   const timestamp = nowIso();
-  const version = input.version?.trim() || existing.verified_version || null;
   db.prepare(
     `UPDATE tech_nodes SET content_status = 'complete', content_verified_at = ?,
        verified_version = ?, updated_at = ? WHERE id = ?`,

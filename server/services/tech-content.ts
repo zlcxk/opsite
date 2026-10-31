@@ -1,4 +1,5 @@
-import type { TechContentSource, TechContentStatus } from '../../shared/types.js';
+import crypto from 'node:crypto';
+import type { TechContentSource, TechContentStatus, TechExternalLink } from '../../shared/types.js';
 import { db, nowIso } from '../db.js';
 import { KUBERNETES_CONTENT } from './tech-content-kubernetes.js';
 import { KUBERNETES_DOCS } from './tech-content-kubernetes-docs.js';
@@ -31,6 +32,13 @@ export interface TechContentEntry extends TechCardContent {
   /** Fills the node's existing docs/repo fields only when they are empty. */
   docsUrl?: string;
   repoUrl?: string;
+  referenceLinks?: TechExternalLink[];
+  /**
+   * A one-time content revision is allowed only when the stored Markdown still
+   * matches the previous authored version. This upgrades untouched seeds
+   * without ever overwriting a document the user has edited or verified.
+   */
+  replacesContentHash?: string;
 }
 
 const CARD_COLUMNS: Array<{ key: keyof TechCardContent; column: string }> = [
@@ -57,23 +65,46 @@ interface NodeContentRow {
   applicable_versions: string | null;
   docs_url: string | null;
   repo_url: string | null;
+  reference_links: string | null;
+  content_status: TechContentStatus;
+  content_verified_at: string | null;
 }
 
 function isEmpty(value: string | null | undefined): boolean {
   return !value || !value.trim();
 }
 
+function hasReferenceLinks(value: string | null): boolean {
+  if (isEmpty(value)) return false;
+  try {
+    const parsed = JSON.parse(value!);
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return true;
+  }
+}
+
+function hashMarkdown(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
 /**
- * Merge entries for the same node without letting `undefined` erase a field
- * that an earlier source explicitly provided. Later entries win when they
- * actually define a value; that keeps the card → document priority explicit.
+ * Merge entries for the same node without letting an absent value erase a
+ * field that an earlier source explicitly provided. Later entries win when
+ * they actually define a value; undefined, null, empty strings and empty
+ * arrays are treated as "not provided".
  */
 export function mergeDefined(base: TechContentEntry, override: TechContentEntry): TechContentEntry {
   const merged = { ...base };
   for (const [key, value] of Object.entries(override) as Array<
     [keyof TechContentEntry, TechContentEntry[keyof TechContentEntry]]
   >) {
-    if (value !== undefined) {
+    const meaningful =
+      value !== undefined &&
+      value !== null &&
+      !(typeof value === 'string' && !value.trim()) &&
+      !(Array.isArray(value) && value.length === 0);
+    if (meaningful) {
       (merged as Record<string, unknown>)[key] = value;
     }
   }
@@ -119,7 +150,16 @@ function applyEntry(entry: TechContentEntry, timestamp: string, force: boolean):
       updates.push({ column, value: authored });
     }
   }
-  if (entry.contentMarkdown && isEmpty(row.content_markdown)) {
+
+  // A revision may replace a base document only when its bytes are exactly the
+  // previous authored version. User edits and explicit verifications always win.
+  const canReplace =
+    Boolean(entry.replacesContentHash && row.content_markdown) &&
+    hashMarkdown(row.content_markdown!) === entry.replacesContentHash &&
+    row.content_status === 'draft' &&
+    !row.content_verified_at;
+
+  if (entry.contentMarkdown && (isEmpty(row.content_markdown) || canReplace)) {
     updates.push({ column: 'content_markdown', value: entry.contentMarkdown });
     updates.push({ column: 'content_status', value: entry.contentStatus ?? 'draft' });
     updates.push({ column: 'content_updated_at', value: timestamp });
@@ -127,7 +167,7 @@ function applyEntry(entry: TechContentEntry, timestamp: string, force: boolean):
   if (entry.contentSource && isEmpty(row.content_source)) {
     updates.push({ column: 'content_source', value: entry.contentSource });
   }
-  if (entry.applicableVersions && isEmpty(row.applicable_versions)) {
+  if (entry.applicableVersions && (isEmpty(row.applicable_versions) || canReplace)) {
     updates.push({ column: 'applicable_versions', value: entry.applicableVersions });
   }
   if (entry.docsUrl && isEmpty(row.docs_url)) {
@@ -135,6 +175,9 @@ function applyEntry(entry: TechContentEntry, timestamp: string, force: boolean):
   }
   if (entry.repoUrl && isEmpty(row.repo_url)) {
     updates.push({ column: 'repo_url', value: entry.repoUrl });
+  }
+  if (entry.referenceLinks?.length && !hasReferenceLinks(row.reference_links)) {
+    updates.push({ column: 'reference_links', value: JSON.stringify(entry.referenceLinks) });
   }
 
   if (updates.length) {
@@ -202,4 +245,13 @@ export function seedTechContent(options: { nodeIds?: Set<string>; force?: boolea
 /** Exposed for diagnostics and tests. */
 export function contentEntryForNode(nodeId: string): TechContentEntry | undefined {
   return TECH_CONTENT_ENTRIES.find((entry) => entry.nodeId === nodeId);
+}
+
+/** Applies one authored entry. Exposed so the hash-gated upgrade path can be
+ * tested against controlled documents without relying on a real old database. */
+export function applyTechContentEntry(
+  entry: TechContentEntry,
+  timestamp = nowIso(),
+): boolean {
+  return applyEntry(entry, timestamp, false);
 }
