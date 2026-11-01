@@ -926,7 +926,11 @@ export interface TechTreeNode extends TechNodeSummary {
   children: TechTreeNode[];
 }
 
+export type TechRelationReviewStatus = 'unreviewed' | 'independent';
+
 export interface TechNode extends TechNodeSummary {
+  relationReviewStatus: TechRelationReviewStatus;
+  relationReviewNote: string | null;
   description: string | null;
   technicalRole: string | null;
   corePrinciple: string | null;
@@ -1156,6 +1160,11 @@ export interface KnowledgeBuildMapping {
   /** Explicit existing node for the "link_existing" strategy. */
   nodeId?: string | null;
   linkStrategy?: KnowledgeBuildLinkStrategy;
+  /**
+   * When linking to an empty node, explicitly opt in to also initializing a
+   * standard draft. Existing bodies are never touched.
+   */
+  initializeOnLink?: boolean;
   /** Only `{name}` is substituted. No free-form generation. */
   nameTemplate?: string | null;
 }
@@ -1171,11 +1180,14 @@ export interface KnowledgeBuildRequest {
   sources?: KnowledgeBuildSourceInput;
   confirmed?: boolean;
   previewHash?: string;
+  /** Server-side preview snapshot to consume. Required by execute. */
+  previewId?: string;
 }
 
 export type KnowledgeBuildPreviewAction =
   | 'create_node'
   | 'link_existing'
+  | 'link_and_initialize'
   | 'initialize_doc'
   | 'skip'
   | 'pending';
@@ -1201,6 +1213,7 @@ export interface KnowledgeBuildPreviewCounts {
   unlinkedSoftware: number;
   createNode: number;
   linkExisting: number;
+  linkAndInitialize: number;
   initializeDoc: number;
   skip: number;
   pending: number;
@@ -1210,7 +1223,9 @@ export interface KnowledgeBuildPreviewCounts {
 
 export interface KnowledgeBuildPreview {
   scopeType: KnowledgeBuildScopeType;
+  previewId: string;
   previewHash: string;
+  expiresAt: string;
   counts: KnowledgeBuildPreviewCounts;
   items: KnowledgeBuildPreviewItem[];
   warnings: string[];
@@ -1305,6 +1320,10 @@ export interface KnowledgeLintItem {
   rule: string;
   severity: KnowledgeLintSeverity;
   message: string;
+  /** Section where a placeholder was found, when applicable. */
+  section?: string | null;
+  /** Short excerpt around the matched placeholder, when applicable. */
+  snippet?: string | null;
 }
 
 export interface KnowledgeLintResult {

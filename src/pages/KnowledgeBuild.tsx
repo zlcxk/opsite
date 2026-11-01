@@ -43,6 +43,7 @@ import { EmptyState, PageHeader } from '../components/ui';
 const actionLabels: Record<string, string> = {
   create_node: '新建节点',
   link_existing: '关联现有节点',
+  link_and_initialize: '关联并初始化',
   initialize_doc: '初始化文档',
   skip: '跳过',
   pending: '待人工决定',
@@ -83,6 +84,25 @@ function emptyRequest(): KnowledgeBuildRequest {
     templateKey: 'component-l2-v1',
     mapping: { linkStrategy: 'none' },
     sources: { docsUrl: null, referenceLinks: [] },
+  };
+}
+
+function emptyRuleDraft() {
+  return {
+    name: '',
+    triggerType: 'software_created' as KnowledgeBuildTriggerType,
+    templateKey: 'component-l2-v1' as KnowledgeBuildTemplateKey,
+    category: '',
+    domainId: '',
+    nodeType: 'component' as TechNodeType,
+    parentId: '',
+    linkStrategy: 'create_node' as KnowledgeBuildLinkStrategy,
+    initializeOnLink: false,
+    docsUrl: '',
+    refs: [
+      { label: '官方文档', url: '' },
+      { label: '源码仓库', url: '' },
+    ] as TechExternalLink[],
   };
 }
 
@@ -128,11 +148,13 @@ export function KnowledgeBuild() {
     domainId: '',
     parentId: '',
     nodeType: 'component' as TechNodeType,
+    summary: '',
   });
   const [mappingDomainId, setMappingDomainId] = useState('');
   const [mappingParentId, setMappingParentId] = useState('');
   const [mappingNodeType, setMappingNodeType] = useState<TechNodeType>('component');
   const [linkStrategy, setLinkStrategy] = useState<KnowledgeBuildLinkStrategy>('none');
+  const [initializeOnLink, setInitializeOnLink] = useState(false);
   const [onlyMissing, setOnlyMissing] = useState(false);
   const [onlyDraft, setOnlyDraft] = useState(false);
   const [skipVerified, setSkipVerified] = useState(true);
@@ -149,22 +171,13 @@ export function KnowledgeBuild() {
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const [ruleDraft, setRuleDraft] = useState({
-    name: '',
-    triggerType: 'software_created' as KnowledgeBuildTriggerType,
-    templateKey: 'component-l2-v1' as KnowledgeBuildTemplateKey,
-    category: '',
-    domainId: '',
-    nodeType: 'component' as TechNodeType,
-    parentId: '',
-    linkStrategy: 'create_node' as KnowledgeBuildLinkStrategy,
-    docsUrl: '',
-    refs: [
-      { label: '官方文档', url: '' },
-      { label: '源码仓库', url: '' },
-    ] as TechExternalLink[],
-  });
+  const [ruleDraft, setRuleDraft] = useState(emptyRuleDraft);
   const [ruleBusy, setRuleBusy] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [ruleExtras, setRuleExtras] = useState<{
+    scopeConfig: Record<string, unknown>;
+    mappingConfig: Record<string, unknown>;
+  }>({ scopeConfig: {}, mappingConfig: {} });
 
   const searchKey = searchParams.toString();
   useEffect(() => {
@@ -262,6 +275,7 @@ export function KnowledgeBuild() {
               domainId: newNode.domainId,
               parentId: newNode.parentId || null,
               nodeType: newNode.nodeType,
+              summary: newNode.summary.trim() || null,
             }
           : undefined,
       filters,
@@ -271,6 +285,7 @@ export function KnowledgeBuild() {
         parentId: mappingParentId || null,
         nodeType: mappingNodeType,
         linkStrategy,
+        initializeOnLink,
       },
       sources: { docsUrl: docsUrl || null, referenceLinks: links },
     };
@@ -291,6 +306,7 @@ export function KnowledgeBuild() {
     mappingParentId,
     mappingNodeType,
     linkStrategy,
+    initializeOnLink,
     onlyMissing,
     onlyDraft,
     skipVerified,
@@ -329,7 +345,14 @@ export function KnowledgeBuild() {
       const data = await api.post<KnowledgeBuildPreview>('/tech/knowledge-build/preview', request);
       setPreview(data);
       setConfirmed(false);
-      push(`预览完成：${data.counts.createNode + data.counts.initializeDoc + data.counts.linkExisting} 项可执行`);
+      push(
+        `预览完成：${
+          data.counts.createNode +
+          data.counts.initializeDoc +
+          data.counts.linkExisting +
+          data.counts.linkAndInitialize
+        } 项可执行`,
+      );
     } catch (error) {
       push(error instanceof Error ? error.message : '预览失败', 'error');
     } finally {
@@ -344,6 +367,7 @@ export function KnowledgeBuild() {
       const data = await api.post<KnowledgeBuildResult>('/tech/knowledge-build/execute', {
         ...request,
         confirmed: true,
+        previewId: preview.previewId,
         previewHash: preview.previewHash,
       });
       setResult(data);
@@ -351,7 +375,12 @@ export function KnowledgeBuild() {
       setConfirmed(false);
       push('建档任务已执行');
     } catch (error) {
-      push(error instanceof Error ? error.message : '执行失败', 'error');
+      const message = error instanceof Error ? error.message : '执行失败';
+      if (/预览|409/.test(message)) {
+        setPreview(null);
+        setConfirmed(false);
+      }
+      push(message, 'error');
     } finally {
       setBusy(null);
     }
@@ -378,45 +407,109 @@ export function KnowledgeBuild() {
     }
   };
 
-  const createRule = async () => {
+  const buildRulePayload = () => {
+    const softwareTrigger = ruleDraft.triggerType === 'software_created';
+    return {
+      name: ruleDraft.name.trim(),
+      enabled: true,
+      targetType: softwareTrigger ? ('software' as const) : ('node' as const),
+      triggerType: ruleDraft.triggerType,
+      scopeType: softwareTrigger ? ('software' as const) : ('nodes' as const),
+      scopeConfig: softwareTrigger
+        ? { ...ruleExtras.scopeConfig, category: ruleDraft.category || null }
+        : {
+            ...ruleExtras.scopeConfig,
+            domainId: ruleDraft.domainId || null,
+            nodeType: ruleDraft.nodeType,
+          },
+      mappingConfig: softwareTrigger
+        ? {
+            ...ruleExtras.mappingConfig,
+            domainId: ruleDraft.domainId || null,
+            parentId: ruleDraft.parentId || null,
+            nodeType: ruleDraft.nodeType,
+            linkStrategy: ruleDraft.linkStrategy,
+            initializeOnLink:
+              ruleDraft.linkStrategy === 'link_existing' && ruleDraft.initializeOnLink,
+          }
+        : { ...ruleExtras.mappingConfig },
+      templateKey: ruleDraft.templateKey,
+      sourceConfig: {
+        docsUrl: ruleDraft.docsUrl || null,
+        referenceLinks: ruleDraft.refs
+          .map((link) => ({ label: link.label.trim(), url: link.url.trim() }))
+          .filter((link) => link.label && link.url),
+      },
+    };
+  };
+
+  const saveRule = async () => {
     if (!ruleDraft.name.trim()) {
       push('规则需要名称', 'error');
       return;
     }
     setRuleBusy(true);
-    const softwareTrigger = ruleDraft.triggerType === 'software_created';
     try {
-      await api.post<KnowledgeBuildRule>('/tech/knowledge-build/rules', {
-        name: ruleDraft.name.trim(),
-        enabled: true,
-        targetType: softwareTrigger ? 'software' : 'node',
-        triggerType: ruleDraft.triggerType,
-        scopeType: softwareTrigger ? 'software' : 'nodes',
-        scopeConfig: softwareTrigger
-          ? { category: ruleDraft.category || null }
-          : { domainId: ruleDraft.domainId || null, nodeType: ruleDraft.nodeType },
-        mappingConfig: softwareTrigger
-          ? {
-              domainId: ruleDraft.domainId || null,
-              parentId: ruleDraft.parentId || null,
-              nodeType: ruleDraft.nodeType,
-              linkStrategy: ruleDraft.linkStrategy,
-            }
-          : {},
-        templateKey: ruleDraft.templateKey,
-        sourceConfig: {
-          docsUrl: ruleDraft.docsUrl || null,
-          referenceLinks: ruleDraft.refs.filter((link) => link.label && link.url),
-        },
-      });
-      push('自动建档规则已创建');
-      setRuleDraft((current) => ({ ...current, name: '' }));
+      const payload = {
+        ...buildRulePayload(),
+        enabled: editingRuleId
+          ? (rules?.find((rule) => rule.id === editingRuleId)?.enabled ?? true)
+          : true,
+      };
+      if (editingRuleId) {
+        await api.patch<KnowledgeBuildRule>(
+          `/tech/knowledge-build/rules/${editingRuleId}`,
+          payload,
+        );
+        push('自动建档规则已更新；历史建档结果不会回填');
+      } else {
+        await api.post<KnowledgeBuildRule>('/tech/knowledge-build/rules', payload);
+        push('自动建档规则已创建');
+      }
+      setRuleDraft(emptyRuleDraft());
+      setEditingRuleId(null);
+      setRuleExtras({ scopeConfig: {}, mappingConfig: {} });
       await refetchRules(true);
     } catch (error) {
-      push(error instanceof Error ? error.message : '创建规则失败', 'error');
+      push(error instanceof Error ? error.message : '保存规则失败', 'error');
     } finally {
       setRuleBusy(false);
     }
+  };
+
+  const editRule = (rule: KnowledgeBuildRule) => {
+    const softwareTrigger = rule.triggerType === 'software_created';
+    const sourceConfig = rule.sourceConfig ?? {};
+    setEditingRuleId(rule.id);
+    setRuleExtras({
+      scopeConfig: { ...(rule.scopeConfig ?? {}) },
+      mappingConfig: { ...(rule.mappingConfig ?? {}) },
+    });
+    setRuleDraft({
+      name: rule.name,
+      triggerType: rule.triggerType,
+      templateKey: rule.templateKey,
+      category: rule.scopeConfig?.category ?? '',
+      domainId:
+        rule.mappingConfig?.domainId ??
+        rule.scopeConfig?.domainId ??
+        '',
+      nodeType:
+        rule.mappingConfig?.nodeType ??
+        rule.scopeConfig?.nodeType ??
+        'component',
+      parentId: rule.mappingConfig?.parentId ?? rule.scopeConfig?.parentId ?? '',
+      linkStrategy: rule.mappingConfig?.linkStrategy ?? (softwareTrigger ? 'none' : 'create_node'),
+      initializeOnLink: rule.mappingConfig?.initializeOnLink ?? false,
+      docsUrl: sourceConfig.docsUrl ?? '',
+      refs: (sourceConfig.referenceLinks ?? []).map((link) => ({ ...link })),
+    });
+  };
+
+  const cancelRuleEdit = () => {
+    setEditingRuleId(null);
+    setRuleDraft(emptyRuleDraft());
+    setRuleExtras({ scopeConfig: {}, mappingConfig: {} });
   };
 
   const toggleRule = async (rule: KnowledgeBuildRule) => {
@@ -655,6 +748,16 @@ export function KnowledgeBuild() {
                         </select>
                       </label>
                     </div>
+                    {linkStrategy === 'link_existing' && (
+                      <label className="check-row mt-3">
+                        <input
+                          type="checkbox"
+                          checked={initializeOnLink}
+                          onChange={(event) => setInitializeOnLink(event.target.checked)}
+                        />
+                        关联现有节点时，若该节点没有正文，同时初始化标准草稿（不会覆盖已有正文）
+                      </label>
+                    )}
                   </div>
                 )}
 
@@ -850,6 +953,18 @@ export function KnowledgeBuild() {
                         </select>
                       </label>
                     </div>
+                    <label className="field mt-3">
+                      <span className="field-label">节点摘要（可选，最多 500 字符）</span>
+                      <input
+                        className="field-input"
+                        maxLength={500}
+                        value={newNode.summary}
+                        onChange={(event) =>
+                          setNewNode((current) => ({ ...current, summary: event.target.value }))
+                        }
+                        placeholder="只填写已确认的事实，不写未核实的技术结论"
+                      />
+                    </label>
                   </div>
                 )}
               </div>
@@ -1021,12 +1136,16 @@ export function KnowledgeBuild() {
                   />
                 ) : (
                   <>
+                    <p className="field-hint">
+                      预览有效期至 {new Date(preview.expiresAt).toLocaleTimeString()}。范围或数据变化后需要重新预览。
+                    </p>
                     <div className="kb-counts">
                       {[
                         ['选中软件', preview.counts.selectedSoftware],
                         ['选中节点', preview.counts.selectedNodes],
                         ['新建节点', preview.counts.createNode],
                         ['关联现有', preview.counts.linkExisting],
+                        ['关联并初始化', preview.counts.linkAndInitialize],
                         ['初始化文档', preview.counts.initializeDoc],
                         ['跳过', preview.counts.skip],
                         ['待人工决定', preview.counts.pending],
@@ -1127,7 +1246,7 @@ export function KnowledgeBuild() {
             <div className="panel-head">
               <div>
                 <span className="eyebrow">Automatic rules</span>
-                <h3>新建自动建档规则</h3>
+                <h3>{editingRuleId ? '编辑自动建档规则' : '新建自动建档规则'}</h3>
               </div>
             </div>
             <div className="panel-body">
@@ -1259,6 +1378,21 @@ export function KnowledgeBuild() {
                       </select>
                     </label>
                   </div>
+                  {ruleDraft.linkStrategy === 'link_existing' && (
+                    <label className="check-row mt-3">
+                      <input
+                        type="checkbox"
+                        checked={ruleDraft.initializeOnLink}
+                        onChange={(event) =>
+                          setRuleDraft((current) => ({
+                            ...current,
+                            initializeOnLink: event.target.checked,
+                          }))
+                        }
+                      />
+                      关联现有节点时初始化空文档（已有正文不覆盖）
+                    </label>
+                  )}
                   <label className="field mt-3">
                     <span className="field-label">父节点（可选）</span>
                     <select
@@ -1392,9 +1526,20 @@ export function KnowledgeBuild() {
               <p className="field-hint mt-3">
                 自动规则只在创建软件或节点时运行。无法确定领域、父节点或关联方式时，会生成待处理项，不会猜测。
               </p>
-              <button className="btn btn-primary mt-3" disabled={ruleBusy} onClick={() => void createRule()}>
-                {ruleBusy ? '创建中…' : '创建规则'}
-              </button>
+              <div className="field-row mt-3">
+                <button className="btn btn-primary" disabled={ruleBusy} onClick={() => void saveRule()}>
+                  {ruleBusy
+                    ? '保存中…'
+                    : editingRuleId
+                      ? '保存修改'
+                      : '创建规则'}
+                </button>
+                {editingRuleId && (
+                  <button className="btn btn-ghost" onClick={cancelRuleEdit}>
+                    取消编辑
+                  </button>
+                )}
+              </div>
             </div>
           </section>
 
@@ -1436,6 +1581,9 @@ export function KnowledgeBuild() {
                         </div>
                         {rule.lastError && <p className="field-hint">{rule.lastError}</p>}
                         <div className="kb-rule-actions">
+                          <button className="btn btn-ghost btn-sm" onClick={() => editRule(rule)}>
+                            <RefreshCw size={12} /> 编辑
+                          </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => void toggleRule(rule)}>
                             {rule.enabled ? <Pause size={12} /> : <Play size={12} />}
                             {rule.enabled ? '暂停' : '启用'}

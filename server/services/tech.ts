@@ -128,6 +128,8 @@ interface NodeRow {
   content_updated_at: string | null;
   content_verified_at: string | null;
   verified_version: string | null;
+  relation_review_status: 'unreviewed' | 'independent';
+  relation_review_note: string | null;
   mastery_status: TechMasteryStatus;
   focus_level: TechFocusLevel;
   status: 'active' | 'archived';
@@ -249,6 +251,8 @@ function mapNode(row: NodeRow, childCount: number): TechNode {
     contentUpdatedAt: row.content_updated_at,
     contentVerifiedAt: row.content_verified_at,
     verifiedVersion: row.verified_version,
+    relationReviewStatus: row.relation_review_status ?? 'unreviewed',
+    relationReviewNote: row.relation_review_note,
     createdAt: row.created_at,
   };
 }
@@ -816,6 +820,58 @@ export function getNodeDetail(id: string): TechNodeDetail | null {
   };
 }
 
+function isKnowledgeHttpsUrl(value: string | null | undefined): boolean {
+  if (!value?.trim()) return false;
+  try {
+    const url = new URL(value.trim());
+    return (
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      (!url.port || url.port === '443') &&
+      Boolean(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertKnowledgeSourceUrls(
+  docsUrl: string | null | undefined,
+  links: Array<{ label: string; url: string }> | undefined,
+  legacyUrls: Set<string> = new Set(),
+): void {
+  const docs = docsUrl?.trim();
+  if (docs && !isKnowledgeHttpsUrl(docs) && !legacyUrls.has(docs)) {
+    throw new TechRequestError(
+      '官方文档地址必须使用 HTTPS，且不能包含用户名、密码或非 443 端口',
+      400,
+    );
+  }
+  for (const link of links ?? []) {
+    const url = link.url?.trim();
+    if (!url) continue;
+    if (!isKnowledgeHttpsUrl(url) && !legacyUrls.has(url)) {
+      throw new TechRequestError(
+        '参考来源必须使用 HTTPS，且不能包含用户名、密码或非 443 端口',
+        400,
+      );
+    }
+  }
+}
+
+function legacySourceUrls(node: {
+  docs_url: string | null;
+  reference_links: string | null;
+}): Set<string> {
+  const urls = new Set<string>();
+  if (node.docs_url) urls.add(node.docs_url);
+  for (const link of parseLinks(node.reference_links ?? '')) {
+    if (link.url) urls.add(link.url);
+  }
+  return urls;
+}
+
 export interface NodeInput {
   name: string;
   nodeType: TechNodeType;
@@ -851,6 +907,7 @@ export function createNode(domainId: string, input: NodeInput): TechNode {
   if (input.verifiedVersion !== undefined && input.verifiedVersion !== null && input.verifiedVersion.trim()) {
     throw new TechRequestError('验证版本只能通过验证操作写入', 400);
   }
+  assertKnowledgeSourceUrls(input.docsUrl, input.referenceLinks);
   const parentId = input.parentId ?? null;
   assertParent(domainId, parentId);
   assertSiblingName(domainId, parentId, input.name.trim());
@@ -917,6 +974,13 @@ export function updateNode(
   if (input.verifiedVersion !== undefined) {
     throw new TechRequestError('验证版本只能通过验证操作写入', 400);
   }
+  // Historical HTTP sources stay editable in place, but any new or changed
+  // source URL must use HTTPS.
+  assertKnowledgeSourceUrls(
+    input.docsUrl !== undefined ? input.docsUrl : null,
+    input.referenceLinks,
+    legacySourceUrls(existing),
+  );
   if (input.name && input.name.trim().toLowerCase() !== existing.name.toLowerCase()) {
     assertSiblingName(existing.domain_id, existing.parent_id, input.name.trim(), id);
   }
@@ -1033,6 +1097,27 @@ export function verifyNodeContent(
     `UPDATE tech_nodes SET content_status = 'complete', content_verified_at = ?,
        verified_version = ?, updated_at = ? WHERE id = ?`,
   ).run(timestamp, version, timestamp, id);
+  return getNode(id)!;
+}
+
+/**
+ * Explicit review of "this node is an independent topic". Real relations take
+ * precedence in the linter; this field only records a human decision when no
+ * relation exists. It never creates or deletes relation rows.
+ */
+export function updateNodeRelationReview(
+  id: string,
+  input: { status: 'unreviewed' | 'independent'; note?: string | null },
+): TechNode {
+  const existing = requireNode(id);
+  const note = input.note?.trim() || null;
+  if (input.status === 'independent' && !note) {
+    throw new TechRequestError('确认独立主题时必须填写原因', 400);
+  }
+  db.prepare(
+    `UPDATE tech_nodes SET relation_review_status = ?, relation_review_note = ?,
+       updated_at = ? WHERE id = ?`,
+  ).run(input.status, input.status === 'independent' ? note : null, nowIso(), existing.id);
   return getNode(id)!;
 }
 

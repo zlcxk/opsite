@@ -102,6 +102,8 @@ export function TechNode() {
   const [lintOpen, setLintOpen] = useState(false);
   const [lintBusy, setLintBusy] = useState(false);
   const [lintResult, setLintResult] = useState<KnowledgeLintResult | null>(null);
+  const [relationReviewNote, setRelationReviewNote] = useState('');
+  const [relationReviewBusy, setRelationReviewBusy] = useState(false);
 
   useEffect(() => {
     if (!data) return;
@@ -112,6 +114,10 @@ export function TechNode() {
     // Reset only when navigating to a different node.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.node.id]);
+
+  useEffect(() => {
+    setRelationReviewNote(data?.node.relationReviewNote ?? '');
+  }, [data?.node.id, data?.node.relationReviewNote]);
 
   const relationTargets = useMemo(() => {
     const term = relationSearch.trim().toLowerCase();
@@ -176,6 +182,28 @@ export function TechNode() {
       setLintOpen(false);
     } finally {
       setLintBusy(false);
+    }
+  };
+
+  const saveRelationReview = async (status: 'unreviewed' | 'independent') => {
+    if (!node) return;
+    const note = relationReviewNote.trim();
+    if (status === 'independent' && !note) {
+      push('确认独立主题时必须填写原因', 'error');
+      return;
+    }
+    setRelationReviewBusy(true);
+    try {
+      await api.patch(`/tech/nodes/${node.id}/relation-review`, {
+        status,
+        note: status === 'independent' ? note : null,
+      });
+      await refresh();
+      push(status === 'independent' ? '已确认该主题独立' : '已取消独立确认');
+    } catch (reviewError) {
+      push(reviewError instanceof Error ? reviewError.message : '保存关联审查失败', 'error');
+    } finally {
+      setRelationReviewBusy(false);
     }
   };
 
@@ -589,6 +617,49 @@ export function TechNode() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {data.relations.length === 0 && (
+                <div className="tech-relation-review">
+                  <div className="tech-relation-review-head">
+                    <strong>无技术关联时的独立确认</strong>
+                    <span
+                      className={`pill ${
+                        node.relationReviewStatus === 'independent' ? 'pill-calm' : 'pill-warn'
+                      }`}
+                    >
+                      {node.relationReviewStatus === 'independent' ? '已确认独立' : '未确认'}
+                    </span>
+                  </div>
+                  <p className="field-hint">
+                    文档体检不会根据正文中的“独立”字样自动判定。若该主题确实独立，请人工确认并填写原因。
+                  </p>
+                  <textarea
+                    className="field-input"
+                    rows={2}
+                    maxLength={1000}
+                    value={relationReviewNote}
+                    onChange={(event) => setRelationReviewNote(event.target.value)}
+                    placeholder="说明为什么该主题不需要技术关联"
+                  />
+                  <div className="field-row mt-2">
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      disabled={relationReviewBusy}
+                      onClick={() => void saveRelationReview('independent')}
+                    >
+                      确认独立主题
+                    </button>
+                    {node.relationReviewStatus === 'independent' && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        disabled={relationReviewBusy}
+                        onClick={() => void saveRelationReview('unreviewed')}
+                      >
+                        取消独立确认
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1015,6 +1086,8 @@ export function TechNode() {
                   <div>
                     <strong>{item.rule}</strong>
                     <p>{item.message}</p>
+                    {item.section && <em className="field-hint">章节：{item.section}</em>}
+                    {item.snippet && <code className="kb-lint-snippet">{item.snippet}</code>}
                   </div>
                 </div>
               ))}

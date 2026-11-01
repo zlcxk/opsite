@@ -8207,3 +8207,37 @@ a {
   border-color: #ecd9cf;
   background: #fcf7f3;
 }
+
+.kb-lint-snippet {
+  display: block;
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--muted);
+  font-size: 0.6875rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tech-relation-review {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--border);
+}
+
+.tech-relation-review-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.tech-relation-review-head strong {
+  font-size: 0.8125rem;
+}
+
+.tech-relation-review textarea {
+  margin-top: 0.5rem;
+  resize: vertical;
+}

@@ -85,6 +85,7 @@ interface LinkedNodeRow {
   key_mechanism: string | null;
   use_cases: string | null;
   common_issues: string | null;
+  status: string;
 }
 
 interface DomainRow {
@@ -117,6 +118,8 @@ interface NodeRow {
   applicable_versions: string | null;
   content_verified_at: string | null;
   verified_version: string | null;
+  relation_review_status: 'unreviewed' | 'independent';
+  relation_review_note: string | null;
   status: string;
 }
 
@@ -144,6 +147,7 @@ interface Candidate {
     parentId: string | null;
     name: string;
     nodeType: TechNodeType;
+    summary: string | null;
   };
   sourceNodeId?: string | null;
 }
@@ -172,12 +176,67 @@ function hasMarkdown(value: string | null | undefined): boolean {
   return Boolean(value?.trim());
 }
 
-function isHttpUrl(value: string | null | undefined): boolean {
-  return Boolean(value && /^https?:\/\//i.test(value));
+/**
+ * Strict HTTPS source validation for newly entered knowledge sources.
+ * Historical rows may still contain HTTP; those are reported by the linter,
+ * not silently rewritten.
+ */
+export function isKnowledgeHttpsUrl(value: string | null | undefined): boolean {
+  if (!value?.trim()) return false;
+  try {
+    const url = new URL(value.trim());
+    return (
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      (!url.port || url.port === '443') &&
+      Boolean(url.hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isHttpsUrl(value: string | null | undefined): boolean {
-  return Boolean(value && /^https:\/\//i.test(value));
+  return isKnowledgeHttpsUrl(value);
+}
+
+function canonicalUrl(value: string): string {
+  try {
+    return new URL(value.trim()).href;
+  } catch {
+    return value.trim();
+  }
+}
+
+function uniqueHttpsLinks(links: TechExternalLink[] | undefined): TechExternalLink[] {
+  const seen = new Set<string>();
+  const result: TechExternalLink[] = [];
+  for (const link of links ?? []) {
+    const url = link.url?.trim();
+    if (!isHttpsUrl(url)) continue;
+    const key = canonicalUrl(url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ label: link.label?.trim() || '官方资料', url: url! });
+  }
+  return result;
+}
+
+function validateSourceInput(sources: KnowledgeBuildSourceInput | undefined): void {
+  const docsUrl = sources?.docsUrl?.trim();
+  if (docsUrl && !isHttpsUrl(docsUrl)) {
+    throw new KnowledgeBuildError(
+      '官方文档地址必须是合法 HTTPS URL，且不能包含用户名、密码或非 443 端口',
+    );
+  }
+  for (const link of sources?.referenceLinks ?? []) {
+    if (!isHttpsUrl(link.url)) {
+      throw new KnowledgeBuildError(
+        '参考来源必须是合法 HTTPS URL，且不能包含用户名、密码或非 443 端口',
+      );
+    }
+  }
 }
 
 function normalizeFilters(input: KnowledgeBuildFilters | undefined): NormalizedRequest['filters'] {
@@ -199,6 +258,7 @@ function normalizeMapping(input: KnowledgeBuildMapping | undefined): NormalizedR
   return {
     ...input,
     linkStrategy: input?.linkStrategy ?? 'none',
+    initializeOnLink: input?.initializeOnLink ?? false,
   };
 }
 
@@ -209,6 +269,9 @@ function normalizeRequest(input: KnowledgeBuildRequest): NormalizedRequest {
   if (input.scopeType === 'new') {
     if (!input.newNode?.domainId || !input.newNode.name?.trim()) {
       throw new KnowledgeBuildError('新建知识需要指定领域和节点名称');
+    }
+    if ((input.newNode.summary?.trim().length ?? 0) > 500) {
+      throw new KnowledgeBuildError('新建知识摘要不能超过 500 个字符');
     }
   }
   if (input.scopeType === 'software') {
@@ -257,7 +320,12 @@ function normalizeRequest(input: KnowledgeBuildRequest): NormalizedRequest {
     throw new KnowledgeBuildError('未知的模板');
   }
   const sources = input.sources ?? {};
-  const referenceLinks = (sources.referenceLinks ?? []).filter((link) => isHttpUrl(link.url));
+  validateSourceInput(sources);
+  const docsUrl = sources.docsUrl?.trim() || null;
+  const docsKey = docsUrl ? canonicalUrl(docsUrl) : null;
+  const referenceLinks = uniqueHttpsLinks(sources.referenceLinks).filter(
+    (link) => canonicalUrl(link.url) !== docsKey,
+  );
   return {
     scopeType: input.scopeType,
     software: {
@@ -275,7 +343,7 @@ function normalizeRequest(input: KnowledgeBuildRequest): NormalizedRequest {
     templateKey,
     mapping: normalizeMapping(input.mapping),
     sources: {
-      docsUrl: sources.docsUrl && isHttpUrl(sources.docsUrl) ? sources.docsUrl.trim() : null,
+      docsUrl,
       referenceLinks,
     },
   };
@@ -326,7 +394,7 @@ function linkedNodesForSoftware(softwareId: string, skipArchived: boolean): Link
          tn.applicable_versions, tn.content_verified_at, tn.verified_version,
          tn.docs_url, tn.repo_url, tn.reference_links, tn.summary, tn.description,
          tn.technical_role, tn.core_principle, tn.solved_problem, tn.key_mechanism,
-         tn.use_cases, tn.common_issues
+         tn.use_cases, tn.common_issues, tn.status
        FROM tech_node_software tns
        JOIN tech_nodes tn ON tn.id = tns.node_id
        JOIN tech_domains td ON td.id = tn.domain_id
@@ -392,7 +460,8 @@ function nodeRowsForScope(scope: KnowledgeBuildNodeScope, filters: NormalizedReq
          tn.summary, tn.description, tn.technical_role, tn.core_principle, tn.solved_problem,
          tn.key_mechanism, tn.use_cases, tn.common_issues, tn.docs_url, tn.repo_url,
          tn.reference_links, tn.content_markdown, tn.content_status, tn.content_source,
-         tn.applicable_versions, tn.content_verified_at, tn.verified_version, tn.status
+         tn.applicable_versions, tn.content_verified_at, tn.verified_version,
+         tn.relation_review_status, tn.relation_review_note, tn.status
        FROM tech_nodes tn
        JOIN tech_domains td ON td.id = tn.domain_id
        ${where}
@@ -408,7 +477,8 @@ function findSameNameNode(domainId: string, name: string): NodeRow | null {
          tn.summary, tn.description, tn.technical_role, tn.core_principle, tn.solved_problem,
          tn.key_mechanism, tn.use_cases, tn.common_issues, tn.docs_url, tn.repo_url,
          tn.reference_links, tn.content_markdown, tn.content_status, tn.content_source,
-         tn.applicable_versions, tn.content_verified_at, tn.verified_version, tn.status
+         tn.applicable_versions, tn.content_verified_at, tn.verified_version,
+         tn.relation_review_status, tn.relation_review_note, tn.status
        FROM tech_nodes tn
        JOIN tech_domains td ON td.id = tn.domain_id
        WHERE tn.domain_id = ? AND tn.status = 'active' AND LOWER(TRIM(tn.name)) = LOWER(TRIM(?))
@@ -432,7 +502,7 @@ function sourceCoverage(
     software?.website,
     software?.repo,
   ];
-  return urls.filter((url) => isHttpsUrl(url)).length >= 2;
+  return new Set(urls.filter((url) => isHttpsUrl(url)).map((url) => canonicalUrl(url!))).size >= 2;
 }
 
 function shouldSkipExisting(
@@ -566,10 +636,15 @@ function softwareCandidate(
       domainName: node.domain_name,
       nodeType: node.node_type,
     });
-    const skip = shouldSkipExisting(node, request.filters);
-    if (skip) {
+    const hasBody = hasMarkdown(node.content_markdown);
+    if (!hasBody && request.mapping.initializeOnLink) {
       return {
-        item: { ...item, key: `node:${node.id}`, action: 'skip', reason: skip },
+        item: {
+          ...item,
+          key: `node:${node.id}`,
+          action: 'link_and_initialize',
+          reason: '关联现有节点，并在同一事务中初始化标准草稿',
+        },
         software,
         node,
         sourceNodeId: node.id,
@@ -580,7 +655,9 @@ function softwareCandidate(
         ...item,
         key: `node:${node.id}`,
         action: 'link_existing',
-        reason: '关联到现有技术节点，并初始化空文档',
+        reason: hasBody
+          ? '只建立关联，保留现有文档'
+          : '只建立关联，不初始化文档',
       },
       software,
       node,
@@ -667,6 +744,7 @@ function softwareCandidate(
       parentId: request.mapping.parentId ?? null,
       name,
       nodeType,
+      summary: software.description,
     },
   };
 }
@@ -698,7 +776,8 @@ function findNodeById(id: string): NodeRow | null {
          tn.summary, tn.description, tn.technical_role, tn.core_principle, tn.solved_problem,
          tn.key_mechanism, tn.use_cases, tn.common_issues, tn.docs_url, tn.repo_url,
          tn.reference_links, tn.content_markdown, tn.content_status, tn.content_source,
-         tn.applicable_versions, tn.content_verified_at, tn.verified_version, tn.status
+         tn.applicable_versions, tn.content_verified_at, tn.verified_version,
+         tn.relation_review_status, tn.relation_review_note, tn.status
        FROM tech_nodes tn
        JOIN tech_domains td ON td.id = tn.domain_id
        WHERE tn.id = ?`,
@@ -757,7 +836,214 @@ function dedupeCandidates(candidates: Candidate[]): Candidate[] {
   return result;
 }
 
-function buildPreview(request: NormalizedRequest): KnowledgeBuildPreview {
+type PreviewBase = Omit<KnowledgeBuildPreview, 'previewId' | 'expiresAt'>;
+
+function sha256Text(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function softwareById(id: string): SoftwareRow | null {
+  const row = db
+    .prepare(
+      `SELECT id, name, category, website, repo, description, watch_status, watch_level,
+         current_version, latest_version
+       FROM software WHERE id = ? AND deleted_at IS NULL`,
+    )
+    .get(id) as SoftwareRow | undefined;
+  return row ?? null;
+}
+
+interface RelationReviewFields {
+  relation_review_status: 'unreviewed' | 'independent';
+  relation_review_note: string | null;
+}
+
+function nodeAssociationIds(nodeId: string): {
+  softwareIds: string[];
+  relationIds: string[];
+} {
+  const softwareIds = (
+    db
+      .prepare('SELECT software_id FROM tech_node_software WHERE node_id = ? ORDER BY software_id')
+      .all(nodeId) as Array<{ software_id: string }>
+  ).map((row) => row.software_id);
+  const relationIds = (
+    db
+      .prepare(
+        `SELECT id FROM tech_relations
+         WHERE source_node_id = ? OR target_node_id = ?
+         ORDER BY id`,
+      )
+      .all(nodeId, nodeId) as Array<{ id: string }>
+  ).map((row) => row.id);
+  return { softwareIds, relationIds };
+}
+
+function nodeSnapshotMetadata(node: NodeRow | LinkedNodeRow | null) {
+  if (!node) return null;
+  const relationReview = node as Partial<RelationReviewFields>;
+  const association = nodeAssociationIds(node.id);
+  return {
+    id: node.id,
+    name: node.name,
+    domainId: node.domain_id,
+    parentId: node.parent_id,
+    nodeType: node.node_type,
+    status: node.status,
+    contentStatus: node.content_status,
+    contentHash: node.content_markdown ? sha256Text(node.content_markdown) : null,
+    contentSource: node.content_source,
+    applicableVersions: node.applicable_versions,
+    contentVerifiedAt: node.content_verified_at,
+    verifiedVersion: node.verified_version,
+    docsUrl: node.docs_url,
+    repoUrl: node.repo_url,
+    referenceLinks: parseJson<TechExternalLink[]>(node.reference_links, []),
+    summary: node.summary,
+    description: node.description,
+    technicalRole: node.technical_role,
+    corePrinciple: node.core_principle,
+    solvedProblem: node.solved_problem,
+    keyMechanism: node.key_mechanism,
+    useCases: node.use_cases,
+    commonIssues: node.common_issues,
+    relationReviewStatus: relationReview.relation_review_status ?? 'unreviewed',
+    relationReviewNote: relationReview.relation_review_note ?? null,
+    softwareIds: association.softwareIds,
+    relationIds: association.relationIds,
+  };
+}
+
+function softwareSnapshotMetadata(software: SoftwareRow | null) {
+  if (!software) return null;
+  return {
+    id: software.id,
+    name: software.name,
+    category: software.category,
+    description: software.description,
+    website: software.website,
+    repo: software.repo,
+    watchStatus: software.watch_status,
+    watchLevel: software.watch_level,
+    currentVersion: software.current_version,
+    latestVersion: software.latest_version,
+  };
+}
+
+function createSnapshotMetadata(
+  item: KnowledgeBuildPreviewItem,
+  request: NormalizedRequest,
+  software: SoftwareRow | null,
+) {
+  if (item.action !== 'create_node') return null;
+  let config: {
+    domainId: string;
+    parentId: string | null;
+    name: string;
+    nodeType: TechNodeType;
+    summary: string | null;
+  };
+  if (request.scopeType === 'new') {
+    const newNode = request.newNode!;
+    config = {
+      domainId: newNode.domainId,
+      parentId: newNode.parentId ?? null,
+      name: newNode.name.trim(),
+      nodeType: newNode.nodeType,
+      summary: newNode.summary?.trim() || null,
+    };
+  } else {
+    config = {
+      domainId: request.mapping.domainId ?? request.nodes.domainId ?? '',
+      parentId: request.mapping.parentId ?? null,
+      name: software ? mappedName(software, request.mapping) : (item.nodeName ?? ''),
+      nodeType: request.mapping.nodeType ?? 'component',
+      summary: software?.description ?? null,
+    };
+  }
+  const domain = config.domainId ? activeDomain(config.domainId) : null;
+  const parent = config.parentId ? findNodeById(config.parentId) : null;
+  const duplicate = domain ? findSameNameNode(domain.id, config.name) : null;
+  return {
+    ...config,
+    domain: domain ? { id: domain.id, name: domain.name, status: domain.status } : null,
+    parent: parent
+      ? {
+          id: parent.id,
+          name: parent.name,
+          status: parent.status,
+          domainId: parent.domain_id,
+        }
+      : null,
+    duplicate: nodeSnapshotMetadata(duplicate),
+  };
+}
+
+interface PreviewSnapshotItem {
+  key: string;
+  action: KnowledgeBuildPreviewItem['action'];
+  softwareId: string | null;
+  softwareName: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
+  domainId: string | null;
+  templateKey: KnowledgeBuildTemplateKey;
+  fingerprint: string;
+}
+
+function snapshotPreview(
+  request: NormalizedRequest,
+  preview: PreviewBase,
+): { items: PreviewSnapshotItem[]; hash: string } {
+  const items = preview.items
+    .map((item) => {
+      const software = item.softwareId ? softwareById(item.softwareId) : null;
+      const node = item.nodeId ? findNodeById(item.nodeId) : null;
+      const fingerprint = sha256Text(
+        JSON.stringify({
+          action: item.action,
+          software: softwareSnapshotMetadata(software),
+          node: nodeSnapshotMetadata(node),
+          create: createSnapshotMetadata(item, request, software),
+        }),
+      );
+      return {
+        key: item.key,
+        action: item.action,
+        softwareId: item.softwareId ?? null,
+        softwareName: item.softwareName ?? null,
+        nodeId: item.nodeId ?? null,
+        nodeName: item.nodeName ?? null,
+        domainId: item.domainId ?? null,
+        templateKey: request.templateKey,
+        fingerprint,
+      };
+    })
+    .sort((left, right) =>
+      left.key === right.key
+        ? left.action.localeCompare(right.action)
+        : left.key.localeCompare(right.key),
+    );
+  return { items, hash: sha256Text(JSON.stringify(items)) };
+}
+
+const PREVIEW_TTL_MS = 10 * 60 * 1000;
+
+interface PreviewRow {
+  id: string;
+  request_hash: string;
+  candidate_hash: string;
+  candidate_snapshot: string;
+  expires_at: string;
+  consumed_at: string | null;
+  created_at: string;
+}
+
+function cleanupExpiredPreviews(): void {
+  db.prepare('DELETE FROM tech_knowledge_build_previews WHERE expires_at < ?').run(nowIso());
+}
+
+function buildPreview(request: NormalizedRequest): PreviewBase {
   let candidates: Candidate[] = [];
   if (request.scopeType === 'software') {
     candidates = resolveSoftwareCandidates(request);
@@ -832,6 +1118,7 @@ function buildPreview(request: NormalizedRequest): KnowledgeBuildPreview {
               parentId: newNode.parentId,
               name: newNode.name.trim(),
               nodeType: newNode.nodeType,
+              summary: newNode.summary?.trim() || null,
             },
           }];
         }
@@ -848,6 +1135,7 @@ function buildPreview(request: NormalizedRequest): KnowledgeBuildPreview {
             parentId: null,
             name: newNode.name.trim(),
             nodeType: newNode.nodeType,
+            summary: newNode.summary?.trim() || null,
           },
         }];
       }
@@ -861,6 +1149,7 @@ function buildPreview(request: NormalizedRequest): KnowledgeBuildPreview {
     unlinkedSoftware: 0,
     createNode: 0,
     linkExisting: 0,
+    linkAndInitialize: 0,
     initializeDoc: 0,
     skip: 0,
     pending: 0,
@@ -877,6 +1166,7 @@ function buildPreview(request: NormalizedRequest): KnowledgeBuildPreview {
     if (candidate.node || candidate.linkedNode) selectedNodeIds.add(candidate.item.nodeId!);
     if (candidate.item.action === 'create_node') counts.createNode += 1;
     if (candidate.item.action === 'link_existing') counts.linkExisting += 1;
+    if (candidate.item.action === 'link_and_initialize') counts.linkAndInitialize += 1;
     if (candidate.item.action === 'initialize_doc') counts.initializeDoc += 1;
     if (candidate.item.action === 'skip') counts.skip += 1;
     if (candidate.item.action === 'pending') {
@@ -895,7 +1185,8 @@ function buildPreview(request: NormalizedRequest): KnowledgeBuildPreview {
     if (
       candidate.item.action === 'initialize_doc' ||
       candidate.item.action === 'create_node' ||
-      candidate.item.action === 'link_existing'
+      candidate.item.action === 'link_existing' ||
+      candidate.item.action === 'link_and_initialize'
     ) {
       const node = candidate.linkedNode ?? candidate.node ?? null;
       if (!sourceCoverage(node, candidate.software ?? null, request.sources)) {
@@ -929,18 +1220,23 @@ function contextForNode(
   node: NodeRow | LinkedNodeRow | null,
   software: SoftwareRow | null,
   request: NormalizedRequest,
+  summaryOverride?: string | null,
 ): KnowledgeDocumentContext {
   const references = [
     ...(node ? parseJson<TechExternalLink[]>(node.reference_links, []) : []),
     ...(request.sources.referenceLinks ?? []),
   ];
-  if (software?.website) references.push({ label: '官方网站', url: software.website });
-  if (software?.repo) references.push({ label: '源码仓库', url: software.repo });
+  if (isHttpsUrl(software?.website)) {
+    references.push({ label: '官方网站', url: software!.website! });
+  }
+  if (isHttpsUrl(software?.repo)) {
+    references.push({ label: '源码仓库', url: software!.repo! });
+  }
   return {
     name,
     nodeType,
-    summary: node?.description ?? node?.summary ?? software?.description ?? null,
-    description: node?.description ?? software?.description ?? null,
+    summary: summaryOverride ?? node?.summary ?? software?.description ?? null,
+    description: node?.description ?? null,
     technicalRole: node?.technical_role ?? null,
     corePrinciple: node?.core_principle ?? null,
     solvedProblem: node?.solved_problem ?? null,
@@ -964,11 +1260,12 @@ function renderFor(
   nodeType: TechNodeType,
   node: NodeRow | LinkedNodeRow | null,
   software: SoftwareRow | null,
+  summaryOverride?: string | null,
 ): string {
   const template = getKnowledgeBuildTemplate(request.templateKey) as KnowledgeTemplateDefinition;
   return renderKnowledgeDocument(
     template,
-    contextForNode(name, nodeType, node, software, request),
+    contextForNode(name, nodeType, node, software, request, summaryOverride),
   );
 }
 
@@ -977,9 +1274,13 @@ function persistedSources(
   software: SoftwareRow | null,
 ): TechExternalLink[] {
   const links = [...(request.sources.referenceLinks ?? [])];
-  if (software?.website) links.push({ label: '官方网站', url: software.website });
-  if (software?.repo) links.push({ label: '源码仓库', url: software.repo });
-  return links;
+  if (isHttpsUrl(software?.website)) {
+    links.push({ label: '官方网站', url: software!.website! });
+  }
+  if (isHttpsUrl(software?.repo)) {
+    links.push({ label: '源码仓库', url: software!.repo! });
+  }
+  return uniqueHttpsLinks(links);
 }
 
 function mergeReferenceLinks(
@@ -992,8 +1293,10 @@ function mergeReferenceLinks(
   const seen = new Set(current.map((link) => link.url));
   const merged = [...current];
   for (const link of additions ?? []) {
-    if (!isHttpUrl(link.url) || seen.has(link.url)) continue;
-    seen.add(link.url);
+    if (!isHttpsUrl(link.url)) continue;
+    const key = canonicalUrl(link.url);
+    if (seen.has(key) || seen.has(link.url.trim())) continue;
+    seen.add(key);
     merged.push({ label: link.label.trim() || '官方资料', url: link.url.trim() });
   }
   return JSON.stringify(merged);
@@ -1062,7 +1365,14 @@ function createNodeWithDocument(
     }
     const id = crypto.randomUUID();
     const timestamp = nowIso();
-    const markdown = renderFor(request, create.name, create.nodeType, null, software);
+    const markdown = renderFor(
+      request,
+      create.name,
+      create.nodeType,
+      null,
+      software,
+      create.summary,
+    );
     const references = mergeReferenceLinks('[]', persistedSources(request, software));
     const max = db
       .prepare(
@@ -1085,8 +1395,8 @@ function createNodeWithDocument(
       create.parentId,
       create.name,
       create.nodeType,
-      software?.description ?? null,
-      software?.description ?? null,
+      create.summary ?? software?.description ?? null,
+      null,
       request.sources.docsUrl ?? null,
       software?.repo ?? null,
       references,
@@ -1102,12 +1412,52 @@ function createNodeWithDocument(
          VALUES (?, ?, ?) ON CONFLICT(node_id, software_id) DO NOTHING`,
       ).run(id, software.id, timestamp);
     }
-    return { status: 'created' as const, message: '已创建节点、关联软件并初始化草稿', nodeId: id };
+    return {
+      status: 'created' as const,
+      message: software
+        ? '已创建节点、关联软件并初始化草稿'
+        : '已创建节点并初始化草稿',
+      nodeId: id,
+    };
   });
   return run();
 }
 
+function insertSoftwareLink(nodeId: string, software: SoftwareRow | null): void {
+  if (!software) return;
+  db.prepare(
+    `INSERT INTO tech_node_software (node_id, software_id, created_at)
+     VALUES (?, ?, ?) ON CONFLICT(node_id, software_id) DO NOTHING`,
+  ).run(nodeId, software.id, nowIso());
+}
+
+/**
+ * Association is deliberately independent from document initialization.
+ * Linking to a node with an existing body must never rewrite that body.
+ */
 function linkExistingNode(
+  nodeId: string,
+  software: SoftwareRow | null,
+): { status: KnowledgeBuildResultStatus; message: string } {
+  const run = db.transaction(() => {
+    const node = findNodeById(nodeId);
+    if (!node) return { status: 'failed' as const, message: '技术节点不存在' };
+    insertSoftwareLink(nodeId, software);
+    return {
+      status: 'linked' as const,
+      message: hasMarkdown(node.content_markdown)
+        ? '已关联软件，保留现有文档'
+        : '已关联软件，未初始化文档',
+    };
+  });
+  return run();
+}
+
+/**
+ * Link and initialization share one transaction so a failed initialization
+ * cannot leave a half-completed association behind.
+ */
+function linkAndInitializeNode(
   nodeId: string,
   request: NormalizedRequest,
   software: SoftwareRow | null,
@@ -1115,145 +1465,247 @@ function linkExistingNode(
   const run = db.transaction(() => {
     const node = findNodeById(nodeId);
     if (!node) return { status: 'failed' as const, message: '技术节点不存在' };
-    if (software) {
-      db.prepare(
-        `INSERT INTO tech_node_software (node_id, software_id, created_at)
-         VALUES (?, ?, ?) ON CONFLICT(node_id, software_id) DO NOTHING`,
-      ).run(nodeId, software.id, nowIso());
-    }
+    insertSoftwareLink(nodeId, software);
     if (hasMarkdown(node.content_markdown)) {
-      return { status: 'linked' as const, message: '已关联软件，正文保持不变' };
+      return {
+        status: 'linked' as const,
+        message: '已关联软件；目标已有正文，未初始化',
+      };
     }
-    const init = initializeExistingNode(nodeId, request, software);
+    const markdown = renderFor(request, node.name, node.node_type, node, software);
+    const referenceLinks = mergeReferenceLinks(
+      node.reference_links,
+      persistedSources(request, software),
+    );
+    const timestamp = nowIso();
+    const result = db
+      .prepare(
+        `UPDATE tech_nodes SET content_markdown = ?, content_status = 'draft',
+           docs_url = COALESCE(NULLIF(TRIM(docs_url), ''), ?),
+           repo_url = COALESCE(NULLIF(TRIM(repo_url), ''), ?),
+           reference_links = ?, content_updated_at = ?, updated_at = ?
+         WHERE id = ? AND (content_markdown IS NULL OR TRIM(content_markdown) = '')`,
+      )
+      .run(
+        markdown,
+        request.sources.docsUrl ?? null,
+        software?.repo ?? null,
+        referenceLinks,
+        timestamp,
+        timestamp,
+        nodeId,
+      );
+    if (!result.changes) {
+      throw new Error('目标节点已被其他操作写入正文，已回滚关联');
+    }
     return {
-      status: init.status === 'initialized' ? ('linked' as const) : init.status,
-      message: software ? '已关联软件；已初始化标准草稿' : init.message,
+      status: 'linked' as const,
+      message: '已关联软件并初始化标准草稿',
     };
   });
   return run();
 }
 
 export function previewKnowledgeBuild(input: KnowledgeBuildRequest): KnowledgeBuildPreview {
-  return buildPreview(normalizeRequest(input));
+  const request = normalizeRequest(input);
+  const preview = buildPreview(request);
+  const snapshot = snapshotPreview(request, preview);
+  cleanupExpiredPreviews();
+  const previewId = crypto.randomUUID();
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + PREVIEW_TTL_MS).toISOString();
+  db.prepare(
+    `INSERT INTO tech_knowledge_build_previews
+      (id, request_hash, candidate_hash, candidate_snapshot, expires_at, consumed_at, created_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+  ).run(
+    previewId,
+    preview.previewHash,
+    snapshot.hash,
+    JSON.stringify(snapshot.items),
+    expiresAt,
+    createdAt,
+  );
+  return { ...preview, previewId, expiresAt };
+}
+
+function claimPreview(
+  previewId: string,
+  requestHash: string,
+): { row: PreviewRow; candidateHash: string } {
+  cleanupExpiredPreviews();
+  const row = db
+    .prepare('SELECT * FROM tech_knowledge_build_previews WHERE id = ?')
+    .get(previewId) as PreviewRow | undefined;
+  if (!row) {
+    throw new KnowledgeBuildError('预览不存在或已经过期，请重新预览。', 409);
+  }
+  if (row.consumed_at) {
+    throw new KnowledgeBuildError('该预览已经执行，不能重复使用。', 409);
+  }
+  if (new Date(row.expires_at).getTime() <= Date.now()) {
+    db.prepare('DELETE FROM tech_knowledge_build_previews WHERE id = ?').run(row.id);
+    throw new KnowledgeBuildError('预览不存在或已经过期，请重新预览。', 409);
+  }
+  if (row.request_hash !== requestHash) {
+    throw new KnowledgeBuildError('预览参数与执行请求不一致。', 409);
+  }
+  return { row, candidateHash: row.candidate_hash };
 }
 
 export function executeKnowledgeBuild(input: KnowledgeBuildRequest): KnowledgeBuildResult {
   if (!input.confirmed) {
     throw new KnowledgeBuildError('执行前必须确认预览范围');
   }
+  if (!input.previewId) {
+    throw new KnowledgeBuildError('执行前必须先获取预览，并携带 previewId。', 400);
+  }
   const request = normalizeRequest(input);
   const preview = buildPreview(request);
   if (!input.previewHash || input.previewHash !== preview.previewHash) {
-    throw new KnowledgeBuildError('预览已变化，请重新预览后再执行');
+    throw new KnowledgeBuildError('预览参数与执行请求不一致。', 409);
   }
-  const candidates: Candidate[] = [];
-  // Re-resolve candidates so execution uses one consistent snapshot and still
-  // checks every invariant inside each item's transaction.
-  if (request.scopeType === 'software') candidates.push(...resolveSoftwareCandidates(request));
-  else if (request.scopeType === 'nodes') candidates.push(...resolveNodeCandidates(request));
-  else if (request.scopeType === 'combined') {
-    const softwareCandidates = resolveSoftwareCandidates(request);
-    const nodeCandidates = resolveNodeCandidates(request);
-    const domainId = request.nodes.domainId ?? null;
-    const filtered = domainId
-      ? softwareCandidates.filter(
-          (candidate) =>
-            candidate.item.domainId === domainId ||
-            (candidate.create && candidate.create.domainId === domainId) ||
-            candidate.item.action === 'pending',
-        )
-      : softwareCandidates;
-    candidates.push(...dedupeCandidates([...filtered, ...nodeCandidates]));
-  } else {
-    // New-knowledge scope has one deterministic candidate.
-    const previewCandidates = buildPreview(request);
-    const item = previewCandidates.items[0];
-    if (!item) throw new KnowledgeBuildError('预览结果为空');
-    if (item.action === 'create_node') {
-      candidates.push({
-        item,
-        create: {
-          domainId: request.newNode!.domainId,
-          parentId: request.newNode!.parentId ?? null,
-          name: request.newNode!.name.trim(),
-          nodeType: request.newNode!.nodeType,
-        },
-      });
-    } else if (item.action === 'pending' && item.nodeId) {
-      candidates.push({ item, node: findNodeById(item.nodeId) ?? undefined });
+  const claimed = claimPreview(input.previewId, preview.previewHash);
+  const currentSnapshot = snapshotPreview(request, preview);
+  if (currentSnapshot.hash !== claimed.candidateHash) {
+    throw new KnowledgeBuildError('预览范围发生变化，请重新生成预览。', 409);
+  }
+  const consumed = db
+    .prepare(
+      `UPDATE tech_knowledge_build_previews SET consumed_at = ?
+       WHERE id = ? AND consumed_at IS NULL`,
+    )
+    .run(nowIso(), input.previewId);
+  if (!consumed.changes) {
+    throw new KnowledgeBuildError('该预览已经执行，不能重复使用。', 409);
+  }
+  try {
+    const candidates: Candidate[] = [];
+    // Re-resolve candidates so execution uses one consistent snapshot and still
+    // checks every invariant inside each item's transaction.
+    if (request.scopeType === 'software') candidates.push(...resolveSoftwareCandidates(request));
+    else if (request.scopeType === 'nodes') candidates.push(...resolveNodeCandidates(request));
+    else if (request.scopeType === 'combined') {
+      const softwareCandidates = resolveSoftwareCandidates(request);
+      const nodeCandidates = resolveNodeCandidates(request);
+      const domainId = request.nodes.domainId ?? null;
+      const filtered = domainId
+        ? softwareCandidates.filter(
+            (candidate) =>
+              candidate.item.domainId === domainId ||
+              (candidate.create && candidate.create.domainId === domainId) ||
+              candidate.item.action === 'pending',
+          )
+        : softwareCandidates;
+      candidates.push(...dedupeCandidates([...filtered, ...nodeCandidates]));
     } else {
-      candidates.push({ item });
+      // New-knowledge scope has one deterministic candidate.
+      const previewCandidates = buildPreview(request);
+      const item = previewCandidates.items[0];
+      if (!item) throw new KnowledgeBuildError('预览结果为空');
+      if (item.action === 'create_node') {
+        candidates.push({
+          item,
+          create: {
+            domainId: request.newNode!.domainId,
+            parentId: request.newNode!.parentId ?? null,
+            name: request.newNode!.name.trim(),
+            nodeType: request.newNode!.nodeType,
+            summary: request.newNode!.summary?.trim() || null,
+          },
+        });
+      } else if (item.action === 'pending' && item.nodeId) {
+        candidates.push({ item, node: findNodeById(item.nodeId) ?? undefined });
+      } else {
+        candidates.push({ item });
+      }
     }
-  }
 
-  const items: KnowledgeBuildResultItem[] = [];
-  const counts: Record<KnowledgeBuildResultStatus, number> = {
-    created: 0,
-    linked: 0,
-    initialized: 0,
-    skipped: 0,
-    pending: 0,
-    failed: 0,
-  };
-  const push = (
-    candidate: Candidate,
-    status: KnowledgeBuildResultStatus,
-    message: string,
-    nodeId?: string | null,
-  ) => {
-    counts[status] += 1;
-    items.push({
-      key: candidate.item.key,
-      status,
-      message,
-      softwareId: candidate.software?.id ?? candidate.item.softwareId,
-      softwareName: candidate.software?.name ?? candidate.item.softwareName,
-      nodeId: nodeId ?? candidate.item.nodeId,
-      nodeName: candidate.item.nodeName,
-    });
-  };
+    const items: KnowledgeBuildResultItem[] = [];
+    const counts: Record<KnowledgeBuildResultStatus, number> = {
+      created: 0,
+      linked: 0,
+      initialized: 0,
+      skipped: 0,
+      pending: 0,
+      failed: 0,
+    };
+    const push = (
+      candidate: Candidate,
+      status: KnowledgeBuildResultStatus,
+      message: string,
+      nodeId?: string | null,
+    ) => {
+      counts[status] += 1;
+      items.push({
+        key: candidate.item.key,
+        status,
+        message,
+        softwareId: candidate.software?.id ?? candidate.item.softwareId,
+        softwareName: candidate.software?.name ?? candidate.item.softwareName,
+        nodeId: nodeId ?? candidate.item.nodeId,
+        nodeName: candidate.item.nodeName,
+      });
+    };
 
-  for (const candidate of candidates) {
-    try {
-      if (candidate.item.action === 'skip') {
-        push(candidate, 'skipped', candidate.item.reason ?? '已跳过');
-        continue;
+    for (const candidate of candidates) {
+      try {
+        if (candidate.item.action === 'skip') {
+          push(candidate, 'skipped', candidate.item.reason ?? '已跳过');
+          continue;
+        }
+        if (candidate.item.action === 'pending') {
+          push(candidate, 'pending', candidate.item.reason ?? '需要人工决定');
+          continue;
+        }
+        if (candidate.item.action === 'initialize_doc' && candidate.item.nodeId) {
+          const result = initializeExistingNode(
+            candidate.item.nodeId,
+            request,
+            candidate.software ?? null,
+          );
+          push(candidate, result.status, result.message, candidate.item.nodeId);
+          continue;
+        }
+        if (candidate.item.action === 'link_existing' && candidate.item.nodeId) {
+          const result = linkExistingNode(candidate.item.nodeId, candidate.software ?? null);
+          push(candidate, result.status, result.message, candidate.item.nodeId);
+          continue;
+        }
+        if (candidate.item.action === 'link_and_initialize' && candidate.item.nodeId) {
+          const result = linkAndInitializeNode(
+            candidate.item.nodeId,
+            request,
+            candidate.software ?? null,
+          );
+          push(candidate, result.status, result.message, candidate.item.nodeId);
+          continue;
+        }
+        if (candidate.item.action === 'create_node' && candidate.create) {
+          const result = createNodeWithDocument(candidate.create, request, candidate.software ?? null);
+          push(candidate, result.status, result.message, result.nodeId);
+          continue;
+        }
+        push(candidate, 'failed', '无法识别该预览项');
+      } catch (error) {
+        push(candidate, 'failed', error instanceof Error ? error.message : '执行失败');
       }
-      if (candidate.item.action === 'pending') {
-        push(candidate, 'pending', candidate.item.reason ?? '需要人工决定');
-        continue;
-      }
-      if (candidate.item.action === 'initialize_doc' && candidate.item.nodeId) {
-        const result = initializeExistingNode(
-          candidate.item.nodeId,
-          request,
-          candidate.software ?? null,
-        );
-        push(candidate, result.status, result.message, candidate.item.nodeId);
-        continue;
-      }
-      if (candidate.item.action === 'link_existing' && candidate.item.nodeId) {
-        const result = linkExistingNode(candidate.item.nodeId, request, candidate.software ?? null);
-        push(candidate, result.status, result.message, candidate.item.nodeId);
-        continue;
-      }
-      if (candidate.item.action === 'create_node' && candidate.create) {
-        const result = createNodeWithDocument(candidate.create, request, candidate.software ?? null);
-        push(candidate, result.status, result.message, result.nodeId);
-        continue;
-      }
-      push(candidate, 'failed', '无法识别该预览项');
-    } catch (error) {
-      push(candidate, 'failed', error instanceof Error ? error.message : '执行失败');
     }
-  }
 
-  return {
-    runAt: nowIso(),
-    previewHash: preview.previewHash,
-    counts,
-    items,
-  };
+    return {
+      runAt: nowIso(),
+      previewHash: preview.previewHash,
+      counts,
+      items,
+    };
+  } catch (error) {
+    // A preview is single-use, but an unexpected failure must not strand it as
+    // consumed. Per-item failures are reported in the result instead.
+    db.prepare(
+      'UPDATE tech_knowledge_build_previews SET consumed_at = NULL WHERE id = ?',
+    ).run(input.previewId);
+    throw error;
+  }
 }
 
 /* --------------------------------- Rules --------------------------------- */
@@ -1311,13 +1763,7 @@ function validateRule(input: KnowledgeBuildRuleInput): void {
     throw new KnowledgeBuildError('节点目标只能由新增节点触发');
   }
   if (!isKnowledgeBuildTemplateKey(input.templateKey)) throw new KnowledgeBuildError('未知模板');
-  const sources = input.sourceConfig ?? {};
-  for (const link of sources.referenceLinks ?? []) {
-    if (!isHttpUrl(link.url)) throw new KnowledgeBuildError('参考来源必须是 HTTP(S) 地址');
-  }
-  if (sources.docsUrl && !isHttpUrl(sources.docsUrl)) {
-    throw new KnowledgeBuildError('官方文档地址必须是 HTTP(S) 地址');
-  }
+  validateSourceInput(input.sourceConfig ?? {});
 }
 
 export function listKnowledgeBuildRules(): KnowledgeBuildRule[] {
@@ -1372,7 +1818,12 @@ export function updateKnowledgeBuildRule(
     templateKey: patch.templateKey ?? existing.templateKey,
     sourceConfig: patch.sourceConfig ?? existing.sourceConfig,
   };
-  validateRule(merged);
+  // Revalidate sources only when the patch changes them. This keeps historical
+  // HTTP rule sources readable and pausable without silently rewriting them.
+  validateRule({
+    ...merged,
+    sourceConfig: patch.sourceConfig !== undefined ? merged.sourceConfig : {},
+  });
   db.prepare(
     `UPDATE tech_knowledge_build_rules SET name = ?, enabled = ?, target_type = ?,
        trigger_type = ?, scope_type = ?, scope_config = ?, mapping_config = ?,
@@ -1565,6 +2016,7 @@ export function runKnowledgeBuildRules(
       const result = executeKnowledgeBuild({
         ...request,
         confirmed: true,
+        previewId: preview.previewId,
         previewHash: preview.previewHash,
       });
       for (const item of result.items) {
@@ -1616,8 +2068,46 @@ const REQUIRED_SECTIONS = [
   '参考资料',
 ];
 
-function lintItem(rule: string, severity: KnowledgeLintItem['severity'], message: string): KnowledgeLintItem {
-  return { rule, severity, message };
+function lintItem(
+  rule: string,
+  severity: KnowledgeLintItem['severity'],
+  message: string,
+  section?: string | null,
+  snippet?: string | null,
+): KnowledgeLintItem {
+  return { rule, severity, message, section: section ?? null, snippet: snippet ?? null };
+}
+
+const PLACEHOLDER_PATTERN = /TODO|TBD|请填写|待补充|需要补充说明/i;
+
+/**
+ * Only user-authored content is checked. Template prompts live in HTML
+ * comments, and the fixed version/reference hints are not author placeholders.
+ */
+function findPlaceholder(markdown: string): { section: string; snippet: string } | null {
+  const cleaned = markdown.replace(/<!--[\s\S]*?-->/g, '');
+  let section = '';
+  for (const rawLine of cleaned.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const heading = /^##\s+(.+)$/.exec(line);
+    if (heading) {
+      section = heading[1].trim();
+      continue;
+    }
+    if (section === '版本差异与兼容性' && /^\|\s*(文档适用版本|本文实际核实版本)/.test(line)) {
+      continue;
+    }
+    if (
+      section === '参考资料' &&
+      /尚未录入官方来源|没有来源时不要标记为已核实/.test(line)
+    ) {
+      continue;
+    }
+    if (PLACEHOLDER_PATTERN.test(line)) {
+      return { section: section || '正文', snippet: line.slice(0, 160) };
+    }
+  }
+  return null;
 }
 
 export async function lintNodeKnowledge(
@@ -1669,26 +2159,53 @@ export async function lintNodeKnowledge(
     items.push(lintItem('version-boundary', 'fail', 'applicableVersions 不能写成最新版本或 latest'));
   }
 
-  const links = [
-    ...(isHttpsUrl(node.docs_url) ? [node.docs_url!] : []),
-    ...parseJson<TechExternalLink[]>(node.reference_links, [])
-      .map((link) => link.url)
-      .filter((url) => isHttpsUrl(url)),
+  const references = parseJson<TechExternalLink[]>(node.reference_links, []);
+  const sourceUrls = [
+    ...(node.docs_url ? [node.docs_url] : []),
+    ...references.map((link) => link.url),
   ];
-  const invalidLinks = parseJson<TechExternalLink[]>(node.reference_links, []).filter(
-    (link) => !isHttpsUrl(link.url),
+  const httpsLinks = new Set(
+    sourceUrls.filter((url) => isHttpsUrl(url)).map((url) => canonicalUrl(url)),
   );
+  const invalidLinks = [
+    ...(node.docs_url && !isHttpsUrl(node.docs_url) ? [node.docs_url] : []),
+    ...references.filter((link) => !isHttpsUrl(link.url)).map((link) => link.url),
+  ];
   if (invalidLinks.length) {
-    items.push(lintItem('source-format', 'fail', '存在非 HTTPS 或格式不合法的官方来源'));
+    items.push(
+      lintItem(
+        'source-format',
+        'fail',
+        '存在非 HTTPS 或格式不合法的来源；历史记录保留，但新增来源必须使用 HTTPS',
+        '参考资料',
+        invalidLinks[0]?.slice(0, 160) ?? null,
+      ),
+    );
   }
-  if (new Set(links).size < 2) {
-    items.push(lintItem('official-sources', 'fail', `至少需要两个 HTTPS 官方来源，当前 ${new Set(links).size}`));
+  if (httpsLinks.size < 2) {
+    items.push(
+      lintItem(
+        'official-sources',
+        'fail',
+        `至少需要两个 HTTPS 官方来源，当前 ${httpsLinks.size}`,
+        '参考资料',
+      ),
+    );
   } else {
-    items.push(lintItem('official-sources', 'pass', `${new Set(links).size} 个 HTTPS 来源`));
+    items.push(lintItem('official-sources', 'pass', `${httpsLinks.size} 个 HTTPS 来源`));
   }
 
-  if (/待补充|待核实|TODO|TBD|请填写/.test(markdown)) {
-    items.push(lintItem('placeholder', 'warning', '正文仍含“待补充 / 待核实 / TODO”等占位提示'));
+  const placeholder = findPlaceholder(markdown);
+  if (placeholder) {
+    items.push(
+      lintItem(
+        'placeholder',
+        'warning',
+        '正文仍含 TODO / TBD / 请填写 / 待补充 / 需要补充说明',
+        placeholder.section,
+        placeholder.snippet,
+      ),
+    );
   } else {
     items.push(lintItem('placeholder', 'pass', '未发现占位提示'));
   }
@@ -1706,10 +2223,22 @@ export async function lintNodeKnowledge(
   ).count;
   if (relationCount > 0) {
     items.push(lintItem('relations', 'pass', `${relationCount} 条技术关联`));
-  } else if (/独立/.test(markdown)) {
-    items.push(lintItem('relations', 'pass', '无技术关联，但已给出独立说明'));
+  } else if (
+    node.relation_review_status === 'independent' &&
+    Boolean(node.relation_review_note?.trim())
+  ) {
+    items.push(
+      lintItem('relations', 'pass', '已人工确认该主题独立，并记录了原因', '技术关联'),
+    );
   } else {
-    items.push(lintItem('relations', 'warning', '没有技术关联，也没有独立说明'));
+    items.push(
+      lintItem(
+        'relations',
+        'warning',
+        '没有技术关联；若确为独立主题，请人工确认并填写原因（不会根据正文关键词自动判定）',
+        '技术关联',
+      ),
+    );
   }
 
   const softwareCount = (
@@ -1729,8 +2258,9 @@ export async function lintNodeKnowledge(
     items.push(lintItem('verification', 'pass', '状态与验证记录一致'));
   }
 
-  if (options.checkUrls && links.length) {
-    const results = await checkKnowledgeUrls(links);
+  const reachableLinks = [...httpsLinks];
+  if (options.checkUrls && reachableLinks.length) {
+    const results = await checkKnowledgeUrls(reachableLinks);
     const broken = results.filter((result) => result.status !== 'ok' && result.status !== 'redirect');
     if (broken.length) {
       items.push(

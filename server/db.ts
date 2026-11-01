@@ -670,6 +670,18 @@ CREATE TABLE IF NOT EXISTS tech_knowledge_build_pending (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- A preview is a server-side snapshot. Execution may only use candidates that
+-- match the snapshot the user actually confirmed.
+CREATE TABLE IF NOT EXISTS tech_knowledge_build_previews (
+  id TEXT PRIMARY KEY,
+  request_hash TEXT NOT NULL,
+  candidate_hash TEXT NOT NULL,
+  candidate_snapshot TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL
+);
 `);
 
 // Forward-compatible migration for databases created by earlier releases.
@@ -708,6 +720,10 @@ ensureColumn('tech_nodes', 'content_updated_at', 'TEXT');
 // must not imply that the described behaviour was re-checked.
 ensureColumn('tech_nodes', 'content_verified_at', 'TEXT');
 ensureColumn('tech_nodes', 'verified_version', 'TEXT');
+// Explicit relation review replaces keyword matching in the linter. Existing
+// nodes start unreviewed and keep their relations untouched.
+ensureColumn('tech_nodes', 'relation_review_status', "TEXT NOT NULL DEFAULT 'unreviewed'");
+ensureColumn('tech_nodes', 'relation_review_note', 'TEXT');
 db.prepare(
   `UPDATE tech_nodes SET content_status = 'missing'
    WHERE content_markdown IS NULL OR TRIM(content_markdown) = ''`,
@@ -735,6 +751,8 @@ CREATE INDEX IF NOT EXISTS idx_tech_build_rules_trigger
   ON tech_knowledge_build_rules(enabled, trigger_type);
 CREATE INDEX IF NOT EXISTS idx_tech_build_pending_status
   ON tech_knowledge_build_pending(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tech_build_previews_expiry
+  ON tech_knowledge_build_previews(expires_at);
 `);
 
 const seedTimestamp = new Date().toISOString();

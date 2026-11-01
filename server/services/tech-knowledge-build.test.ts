@@ -72,6 +72,7 @@ function execute(request: KnowledgeBuildRequest) {
   return build.executeKnowledgeBuild({
     ...request,
     confirmed: true,
+    previewId: first.previewId,
     previewHash: first.previewHash,
   });
 }
@@ -263,9 +264,10 @@ describe('scope preview and execution', () => {
       build.executeKnowledgeBuild({
         ...request,
         confirmed: true,
+        previewId: first.previewId,
         previewHash: `${first.previewHash}changed`,
       }),
-    ).toThrow(/重新预览/);
+    ).toThrow(/不一致|重新预览/);
   });
 
   it('creates new knowledge nodes without requiring a software association', () => {
@@ -295,6 +297,350 @@ describe('scope preview and execution', () => {
   });
 });
 
+describe('preview snapshot binding', () => {
+  it('returns a persisted preview id, candidate hash and expiry', () => {
+    const softwareId = createSoftware('Snapshot Persist Tool');
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'software',
+      software: { ids: [softwareId] },
+      mapping: { domainId, linkStrategy: 'create_node', nodeType: 'component' },
+    };
+    const first = preview(request);
+    expect(first.previewId).toBeTruthy();
+    expect(new Date(first.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    const row = dbModule.db
+      .prepare('SELECT * FROM tech_knowledge_build_previews WHERE id = ?')
+      .get(first.previewId) as {
+      request_hash: string;
+      candidate_hash: string;
+      candidate_snapshot: string;
+      consumed_at: string | null;
+    };
+    expect(row.request_hash).toBe(first.previewHash);
+    expect(row.candidate_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.parse(row.candidate_snapshot).length).toBe(first.items.length);
+    expect(row.consumed_at).toBeNull();
+  });
+
+  it('rejects execution when the candidate set or metadata changed', () => {
+    const softwareId = createSoftware('Snapshot Drift Tool');
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'software',
+      software: { ids: [softwareId] },
+      mapping: { domainId, linkStrategy: 'create_node', nodeType: 'component' },
+    };
+    const first = preview(request);
+    dbModule.db
+      .prepare('UPDATE software SET latest_version = ? WHERE id = ?')
+      .run('99.0.0', softwareId);
+    expect(() =>
+      build.executeKnowledgeBuild({
+        ...request,
+        confirmed: true,
+        previewId: first.previewId,
+        previewHash: first.previewHash,
+      }),
+    ).toThrow(/预览范围发生变化/);
+    expect(
+      dbModule.db
+        .prepare('SELECT consumed_at FROM tech_knowledge_build_previews WHERE id = ?')
+        .get(first.previewId),
+    ).toEqual({ consumed_at: null });
+  });
+
+  it('rejects execution when a target document was modified after preview', () => {
+    const node = tech.createNode(domainId, { name: 'Snapshot Doc Target', nodeType: 'concept' });
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'nodes',
+      nodes: { ids: [node.id] },
+      templateKey: 'concept-l2-v1',
+    };
+    const first = preview(request);
+    tech.updateNode(node.id, { contentMarkdown: 'CHANGED AFTER PREVIEW' });
+    expect(() =>
+      build.executeKnowledgeBuild({
+        ...request,
+        confirmed: true,
+        previewId: first.previewId,
+        previewHash: first.previewHash,
+      }),
+    ).toThrow(/预览范围发生变化/);
+    expect(tech.getNode(node.id)!.contentMarkdown).toBe('CHANGED AFTER PREVIEW');
+  });
+
+  it('rejects a request that does not match the preview and expired previews', () => {
+    const softwareId = createSoftware('Snapshot Expiry Tool');
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'software',
+      software: { ids: [softwareId] },
+      mapping: { domainId, linkStrategy: 'create_node', nodeType: 'component' },
+    };
+    const first = preview(request);
+    expect(() =>
+      build.executeKnowledgeBuild({
+        ...request,
+        sources: { docsUrl: 'https://example.com/other' },
+        confirmed: true,
+        previewId: first.previewId,
+        previewHash: first.previewHash,
+      }),
+    ).toThrow(/不一致/);
+
+    const second = preview(request);
+    dbModule.db
+      .prepare('UPDATE tech_knowledge_build_previews SET expires_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 1000).toISOString(), second.previewId);
+    expect(() =>
+      build.executeKnowledgeBuild({
+        ...request,
+        confirmed: true,
+        previewId: second.previewId,
+        previewHash: second.previewHash,
+      }),
+    ).toThrow(/不存在或已经过期/);
+  });
+
+  it('consumes a preview only once', () => {
+    const softwareId = createSoftware('Snapshot Once Tool');
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'software',
+      software: { ids: [softwareId] },
+      mapping: { domainId, linkStrategy: 'create_node', nodeType: 'component' },
+    };
+    const first = preview(request);
+    const result = build.executeKnowledgeBuild({
+      ...request,
+      confirmed: true,
+      previewId: first.previewId,
+      previewHash: first.previewHash,
+    });
+    expect(result.counts.created).toBe(1);
+    expect(() =>
+      build.executeKnowledgeBuild({
+        ...request,
+        confirmed: true,
+        previewId: first.previewId,
+        previewHash: first.previewHash,
+      }),
+    ).toThrow(/已经执行/);
+  });
+});
+
+describe('association and document initialization boundaries', () => {
+  function linkRequest(softwareId: string, nodeId: string): KnowledgeBuildRequest {
+    return {
+      scopeType: 'software',
+      software: { ids: [softwareId] },
+      mapping: { linkStrategy: 'link_existing', nodeId, initializeOnLink: false },
+    };
+  }
+
+  function softwareLinkCount(nodeId: string, softwareId: string): number {
+    return (
+      dbModule.db
+        .prepare('SELECT COUNT(*) AS count FROM tech_node_software WHERE node_id = ? AND software_id = ?')
+        .get(nodeId, softwareId) as { count: number }
+    ).count;
+  }
+
+  it('links to an existing node with a body without touching the body', () => {
+    const node = tech.createNode(domainId, {
+      name: 'Link Body Target',
+      nodeType: 'component',
+      contentMarkdown: 'BODY MUST NOT CHANGE',
+    });
+    const softwareId = createSoftware('Link Body Tool');
+    const first = preview(linkRequest(softwareId, node.id));
+    expect(first.items[0].action).toBe('link_existing');
+    const result = execute(linkRequest(softwareId, node.id));
+    expect(result.counts.linked).toBe(1);
+    expect(tech.getNode(node.id)!.contentMarkdown).toBe('BODY MUST NOT CHANGE');
+    expect(softwareLinkCount(node.id, softwareId)).toBe(1);
+  });
+
+  it('links to an empty node without initializing unless requested', () => {
+    const node = tech.createNode(domainId, { name: 'Link Empty Target', nodeType: 'component' });
+    const softwareId = createSoftware('Link Empty Tool');
+    const first = preview(linkRequest(softwareId, node.id));
+    expect(first.items[0].action).toBe('link_existing');
+    const result = execute(linkRequest(softwareId, node.id));
+    expect(result.counts.linked).toBe(1);
+    expect(tech.getNode(node.id)!.contentMarkdown ?? null).toBeNull();
+    expect(softwareLinkCount(node.id, softwareId)).toBe(1);
+  });
+
+  it('links and initializes in one action when requested', () => {
+    const node = tech.createNode(domainId, { name: 'Link Init Target', nodeType: 'component' });
+    const softwareId = createSoftware('Link Init Tool');
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'software',
+      software: { ids: [softwareId] },
+      mapping: { linkStrategy: 'link_existing', nodeId: node.id, initializeOnLink: true },
+      templateKey: 'component-l2-v1',
+    };
+    const first = preview(request);
+    expect(first.items[0].action).toBe('link_and_initialize');
+    expect(first.counts.linkAndInitialize).toBe(1);
+    const result = execute(request);
+    expect(result.counts.linked).toBe(1);
+    const saved = tech.getNode(node.id)!;
+    expect(saved.contentStatus).toBe('draft');
+    expect(saved.contentMarkdown).toContain('## 技术定位');
+    expect(softwareLinkCount(node.id, softwareId)).toBe(1);
+
+    // Running the same request again must not duplicate the association.
+    const second = execute(request);
+    expect(second.items[0].status).not.toBe('failed');
+    expect(softwareLinkCount(node.id, softwareId)).toBe(1);
+  });
+
+  it('does not leave an association when the document changed after preview', () => {
+    const node = tech.createNode(domainId, { name: 'Link Rollback Target', nodeType: 'component' });
+    const softwareId = createSoftware('Link Rollback Tool');
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'software',
+      software: { ids: [softwareId] },
+      mapping: { linkStrategy: 'link_existing', nodeId: node.id, initializeOnLink: true },
+    };
+    const first = preview(request);
+    tech.updateNode(node.id, { contentMarkdown: 'CONCURRENT BODY' });
+    expect(() =>
+      build.executeKnowledgeBuild({
+        ...request,
+        confirmed: true,
+        previewId: first.previewId,
+        previewHash: first.previewHash,
+      }),
+    ).toThrow(/预览范围发生变化/);
+    expect(softwareLinkCount(node.id, softwareId)).toBe(0);
+    expect(tech.getNode(node.id)!.contentMarkdown).toBe('CONCURRENT BODY');
+  });
+});
+
+describe('strict HTTPS source intake', () => {
+  it('rejects HTTP manual sources and rule sources', () => {
+    expect(() =>
+      tech.createNode(domainId, {
+        name: 'Direct HTTP Node',
+        nodeType: 'concept',
+        docsUrl: 'http://example.com/direct',
+      }),
+    ).toThrow(/HTTPS/);
+    expect(() =>
+      preview({
+        scopeType: 'new',
+        newNode: { domainId, name: 'HTTP Source', nodeType: 'concept' },
+        sources: { docsUrl: 'http://example.com/docs' },
+      }),
+    ).toThrow(/HTTPS/);
+    expect(() =>
+      preview({
+        scopeType: 'new',
+        newNode: { domainId, name: 'HTTP Ref Source', nodeType: 'concept' },
+        sources: { referenceLinks: [{ label: '旧来源', url: 'http://example.com/ref' }] },
+      }),
+    ).toThrow(/HTTPS/);
+    expect(() =>
+      build.createKnowledgeBuildRule({
+        name: 'HTTP 来源规则',
+        targetType: 'software',
+        triggerType: 'software_created',
+        scopeType: 'software',
+        mappingConfig: { domainId, linkStrategy: 'create_node' },
+        templateKey: 'component-l2-v1',
+        sourceConfig: { docsUrl: 'http://example.com/docs' },
+      }),
+    ).toThrow(/HTTPS/);
+  });
+
+  it('deduplicates new HTTPS sources and keeps historical HTTP rows only for linting', async () => {
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'new',
+      newNode: { domainId, name: 'Dedup Source', nodeType: 'concept' },
+      sources: {
+        docsUrl: 'https://example.com/same',
+        referenceLinks: [
+          { label: '同一来源', url: 'https://example.com/same' },
+          { label: '另一来源', url: 'https://example.com/other' },
+        ],
+      },
+    };
+    const first = preview(request);
+    const result = execute(request);
+    const nodeId = result.items[0].nodeId!;
+    const detail = tech.getNodeDetail(nodeId)!;
+    const urls = [
+      ...(detail.node.docsUrl ? [detail.node.docsUrl] : []),
+      ...detail.node.referenceLinks.map((link) => link.url),
+    ];
+    expect(new Set(urls).size).toBe(urls.length);
+    expect(first.items[0].action).toBe('create_node');
+
+    const legacy = tech.createNode(domainId, {
+      name: 'Legacy HTTP Source',
+      nodeType: 'concept',
+      docsUrl: 'https://legacy.example.com/docs',
+      referenceLinks: [{ label: '旧文档', url: 'https://legacy.example.com/old' }],
+      contentMarkdown: 'LEGACY BODY',
+    });
+    // Simulate a historical row written before strict HTTPS was enforced.
+    dbModule.db
+      .prepare('UPDATE tech_nodes SET docs_url = ?, reference_links = ? WHERE id = ?')
+      .run(
+        'http://legacy.example.com/docs',
+        JSON.stringify([{ label: '旧文档', url: 'http://legacy.example.com/old' }]),
+        legacy.id,
+      );
+    const lint = await build.lintNodeKnowledge(legacy.id);
+    const sourceFormat = lint.items.find((item) => item.rule === 'source-format');
+    expect(sourceFormat?.severity).toBe('fail');
+    expect(sourceFormat?.message).toContain('历史记录保留');
+    expect(tech.getNode(legacy.id)!.docsUrl).toBe('http://legacy.example.com/docs');
+    expect(() =>
+      tech.updateNode(legacy.id, {
+        summary: '保留历史来源的编辑',
+        docsUrl: 'http://legacy.example.com/docs',
+        referenceLinks: [{ label: '旧文档', url: 'http://legacy.example.com/old' }],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      tech.updateNode(legacy.id, {
+        docsUrl: 'http://legacy.example.com/new-docs',
+      }),
+    ).toThrow(/HTTPS/);
+  });
+});
+
+describe('new node summary', () => {
+  it('stores summary in summary and does not duplicate it into description', () => {
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'new',
+      newNode: {
+        domainId,
+        name: 'Summary Node',
+        nodeType: 'concept',
+        summary: '已确认的一句话摘要。',
+      },
+      templateKey: 'concept-l2-v1',
+    };
+    const result = execute(request);
+    const saved = tech.getNode(result.items[0].nodeId!)!;
+    expect(saved.summary).toBe('已确认的一句话摘要。');
+    expect(saved.description ?? null).toBeNull();
+    expect(() =>
+      preview({
+        scopeType: 'new',
+        newNode: {
+          domainId,
+          name: 'Summary Too Long',
+          nodeType: 'concept',
+          summary: 'x'.repeat(501),
+        },
+      }),
+    ).toThrow(/500/);
+  });
+});
+
 describe('linter', () => {
   it('reports structure, sources and placeholders without changing contentStatus', async () => {
     const parent = tech.createNode(domainId, { name: 'Lint Parent', nodeType: 'component' });
@@ -305,6 +651,10 @@ describe('linter', () => {
       mapping: { domainId, parentId: parent.id, linkStrategy: 'create_node', nodeType: 'component' },
     });
     const nodeId = result.items[0].nodeId!;
+    const node = tech.getNode(nodeId)!;
+    tech.updateNode(nodeId, {
+      contentMarkdown: `${node.contentMarkdown}\n\nTODO 补充容量边界说明\n`,
+    });
     const lint = await build.lintNodeKnowledge(nodeId);
     expect(lint.status).toBe('fail');
     expect(lint.items.find((item) => item.rule === 'structure')?.severity).toBe('pass');
@@ -312,6 +662,69 @@ describe('linter', () => {
     expect(lint.items.find((item) => item.rule === 'placeholder')?.severity).toBe('warning');
     expect(lint.items.find((item) => item.rule === 'official-sources')?.severity).toBe('pass');
     expect(tech.getNode(nodeId)!.contentStatus).toBe('draft');
+  });
+
+  it('ignores template comments and fixed version/reference hints for placeholders', async () => {
+    const request: KnowledgeBuildRequest = {
+      scopeType: 'new',
+      newNode: { domainId, name: 'Clean Template', nodeType: 'concept' },
+      templateKey: 'concept-l2-v1',
+      sources: {
+        referenceLinks: [
+          { label: '文档', url: 'https://example.com/clean-one' },
+          { label: '规范', url: 'https://example.com/clean-two' },
+        ],
+      },
+    };
+    const nodeId = execute(request).items[0].nodeId!;
+    const lint = await build.lintNodeKnowledge(nodeId);
+    const placeholder = lint.items.find((item) => item.rule === 'placeholder');
+    expect(placeholder?.severity).toBe('pass');
+  });
+
+  it('uses structured relation review instead of text keywords', async () => {
+    const node = tech.createNode(domainId, {
+      name: 'Independent Keyword Node',
+      nodeType: 'concept',
+      contentMarkdown: '这是一个独立主题，但没有人工确认记录。',
+    });
+    const lint = await build.lintNodeKnowledge(node.id);
+    const relation = lint.items.find((item) => item.rule === 'relations');
+    expect(relation?.severity).toBe('warning');
+    expect(relation?.message).toContain('人工确认');
+
+    expect(() =>
+      tech.updateNodeRelationReview(node.id, { status: 'independent', note: '' }),
+    ).toThrow(/原因/);
+
+    tech.updateNodeRelationReview(node.id, {
+      status: 'independent',
+      note: '该节点是独立术语，没有上下游依赖。',
+    });
+    const reviewed = await build.lintNodeKnowledge(node.id);
+    expect(reviewed.items.find((item) => item.rule === 'relations')?.severity).toBe('pass');
+
+    const peer = tech.createNode(domainId, { name: 'Relation Peer', nodeType: 'concept' });
+    tech.createRelation({
+      sourceNodeId: node.id,
+      targetNodeId: peer.id,
+      relationType: 'related',
+    });
+    const withRelation = await build.lintNodeKnowledge(node.id);
+    expect(withRelation.items.find((item) => item.rule === 'relations')?.severity).toBe('pass');
+  });
+
+  it('reports the placeholder section and snippet', async () => {
+    const node = tech.createNode(domainId, {
+      name: 'Placeholder Location',
+      nodeType: 'concept',
+      contentMarkdown: '## 技术定位\n\nTODO 补充适用边界\n',
+    });
+    const lint = await build.lintNodeKnowledge(node.id);
+    const placeholder = lint.items.find((item) => item.rule === 'placeholder');
+    expect(placeholder?.severity).toBe('warning');
+    expect(placeholder?.section).toBe('技术定位');
+    expect(placeholder?.snippet).toContain('TODO 补充适用边界');
   });
 });
 
@@ -362,6 +775,51 @@ describe('automatic rules', () => {
       softwareId: createSoftware('Disabled Rule Tool'),
     });
     expect(disabledRun.some((run) => run.ruleId === configured.id)).toBe(false);
+  });
+
+  it('updates a rule with the full configuration and validates new sources', () => {
+    const rule = build.createKnowledgeBuildRule({
+      name: '待编辑规则',
+      targetType: 'software',
+      triggerType: 'software_created',
+      scopeType: 'software',
+      scopeConfig: { category: '旧分类' },
+      mappingConfig: { domainId, linkStrategy: 'create_node', nodeType: 'component' },
+      templateKey: 'component-l2-v1',
+      sourceConfig: {
+        referenceLinks: [{ label: '旧来源', url: 'https://example.com/old' }],
+      },
+    });
+    const updated = build.updateKnowledgeBuildRule(rule.id, {
+      name: '已编辑规则',
+      scopeConfig: { category: '新分类' },
+      mappingConfig: {
+        domainId,
+        parentId: null,
+        nodeType: 'concept',
+        linkStrategy: 'link_existing',
+        initializeOnLink: true,
+      },
+      templateKey: 'concept-l2-v1',
+      sourceConfig: {
+        docsUrl: 'https://example.com/new-docs',
+        referenceLinks: [{ label: '新来源', url: 'https://example.com/new-ref' }],
+      },
+    });
+    expect(updated.name).toBe('已编辑规则');
+    expect(updated.scopeConfig.category).toBe('新分类');
+    expect(updated.mappingConfig.nodeType).toBe('concept');
+    expect(updated.mappingConfig.linkStrategy).toBe('link_existing');
+    expect(updated.mappingConfig.initializeOnLink).toBe(true);
+    expect(updated.templateKey).toBe('concept-l2-v1');
+    expect(updated.sourceConfig.docsUrl).toBe('https://example.com/new-docs');
+    expect(() =>
+      build.updateKnowledgeBuildRule(rule.id, {
+        sourceConfig: {
+          referenceLinks: [{ label: 'HTTP', url: 'http://example.com/legacy' }],
+        },
+      }),
+    ).toThrow(/HTTPS/);
   });
 
   it('initializes a newly created node only when a matching rule exists', () => {

@@ -154,6 +154,7 @@ import {
   updateDomain,
   updateNode,
   updateNodeCognition,
+  updateNodeRelationReview,
   updateView,
   verifyNodeContent,
 } from './services/tech.js';
@@ -319,6 +320,27 @@ const techLinkSchema = z.object({
     .refine((value) => /^https?:\/\//i.test(value), { message: '链接需以 http:// 或 https:// 开头' }),
 });
 
+const knowledgeHttpsUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((value) => value === '' || /^https:\/\//i.test(value), {
+    message: '官方文档地址必须使用 HTTPS',
+  })
+  .optional()
+  .nullable();
+
+const knowledgeSourceLinkSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  url: z
+    .string()
+    .trim()
+    .max(500)
+    .refine((value) => /^https:\/\//i.test(value), {
+      message: '参考来源必须使用 HTTPS',
+    }),
+});
+
 const techNodeTypes = [
   'domain',
   'concept',
@@ -398,6 +420,11 @@ const techCognitionSchema = z
   })
   .refine((value) => Object.keys(value).length > 0, { message: '至少提供一个认知字段' });
 
+const techRelationReviewSchema = z.object({
+  status: z.enum(['unreviewed', 'independent']),
+  note: z.string().trim().max(1000).optional().nullable(),
+});
+
 const techMoveSchema = z.object({
   parentId: z.string().trim().max(100).nullable(),
   beforeId: z.string().trim().max(100).optional().nullable(),
@@ -459,7 +486,7 @@ const knowledgeBuildRequestSchema = z.object({
       parentId: z.string().trim().max(100).optional().nullable(),
       name: z.string().trim().min(1).max(120),
       nodeType: z.enum(techNodeTypes),
-      summary: z.string().trim().max(1000).optional().nullable(),
+      summary: z.string().trim().max(500).optional().nullable(),
     })
     .optional(),
   filters: knowledgeBuildFiltersSchema.optional(),
@@ -472,15 +499,17 @@ const knowledgeBuildRequestSchema = z.object({
       nodeId: z.string().trim().max(100).optional().nullable(),
       linkStrategy: z.enum(knowledgeLinkStrategies).optional(),
       nameTemplate: z.string().trim().max(200).optional().nullable(),
+      initializeOnLink: z.boolean().optional(),
     })
     .optional(),
   sources: z
     .object({
-      docsUrl: techUrl,
-      referenceLinks: z.array(techLinkSchema).max(20).optional(),
+      docsUrl: knowledgeHttpsUrl,
+      referenceLinks: z.array(knowledgeSourceLinkSchema).max(20).optional(),
     })
     .optional(),
   confirmed: z.boolean().optional(),
+  previewId: z.string().trim().max(100).optional(),
   previewHash: z.string().trim().max(128).optional(),
 });
 
@@ -511,13 +540,14 @@ const knowledgeBuildRuleSchema = z.object({
       nodeId: z.string().trim().max(100).optional().nullable(),
       linkStrategy: z.enum(knowledgeLinkStrategies).optional(),
       nameTemplate: z.string().trim().max(200).optional().nullable(),
+      initializeOnLink: z.boolean().optional(),
     })
     .optional(),
   templateKey: z.enum(knowledgeTemplateKeys),
   sourceConfig: z
     .object({
-      docsUrl: techUrl,
-      referenceLinks: z.array(techLinkSchema).max(20).optional(),
+      docsUrl: knowledgeHttpsUrl,
+      referenceLinks: z.array(knowledgeSourceLinkSchema).max(20).optional(),
     })
     .optional(),
 });
@@ -1512,6 +1542,16 @@ router.patch('/tech/nodes/:id/cognition', (req, res) => {
   if (!body) return;
   try {
     res.json(updateNodeCognition(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.patch('/tech/nodes/:id/relation-review', (req, res) => {
+  const body = parseBody(techRelationReviewSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(updateNodeRelationReview(req.params.id, body));
   } catch (error) {
     if (!sendTechError(res, error)) throw error;
   }

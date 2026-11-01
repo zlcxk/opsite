@@ -50,6 +50,8 @@ function makeNode(overrides: Partial<TechNode> = {}): TechNode {
     masteryStatus: 'learning',
     focusLevel: 'normal',
     contentStatus: 'draft',
+    relationReviewStatus: 'unreviewed',
+    relationReviewNote: null,
     hasContent: true,
     sortOrder: 0,
     childCount: 0,
