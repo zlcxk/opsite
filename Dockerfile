@@ -67,6 +67,7 @@ COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist/client ./dist/client
 COPY --from=build --chown=node:node /app/dist-server/server ./server
 COPY --chown=node:node package.json ./
+COPY --chown=node:node LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
 
 # SQLite database, WAL files and backups all live on this single volume.
 RUN mkdir -p /app/data && chown node:node /app/data
