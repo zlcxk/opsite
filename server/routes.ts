@@ -57,6 +57,21 @@ import {
 } from './services/software.js';
 import { listJobs, syncAllActive, syncSoftware } from './services/sync.js';
 import {
+  checkKnowledgeUrls,
+  createKnowledgeBuildRule,
+  deleteKnowledgeBuildRule,
+  dismissKnowledgeBuildPending,
+  executeKnowledgeBuild,
+  KnowledgeBuildError,
+  lintNodeKnowledge,
+  listKnowledgeBuildPending,
+  listKnowledgeBuildRules,
+  previewKnowledgeBuild,
+  runKnowledgeBuildRules,
+  updateKnowledgeBuildRule,
+} from './services/tech-knowledge-build.js';
+import { KNOWLEDGE_BUILD_TEMPLATES } from './services/tech-knowledge-templates.js';
+import {
   getDiscoveryScheduleState,
   getNextCollectionAt,
   getSchedulerState,
@@ -393,6 +408,129 @@ const techVerifySchema = z.object({
   version: z.string().trim().min(1).max(120),
 });
 
+const knowledgeTemplateKeys = [
+  'component-l2-v1',
+  'concept-l2-v1',
+  'protocol-l2-v1',
+  'resource-l2-v1',
+  'practice-l2-v1',
+] as const;
+const knowledgeScopeTypes = ['software', 'nodes', 'combined', 'new'] as const;
+const knowledgeTargetTypes = ['software', 'node', 'combined'] as const;
+const knowledgeTriggerTypes = ['software_created', 'node_created'] as const;
+const knowledgeLinkStrategies = ['link_existing', 'create_node', 'none'] as const;
+
+const knowledgeBuildFiltersSchema = z.object({
+  onlyMissing: z.boolean().optional(),
+  onlyDraft: z.boolean().optional(),
+  skipExistingBody: z.boolean().optional(),
+  skipVerified: z.boolean().optional(),
+  activeOnly: z.boolean().optional(),
+  skipArchived: z.boolean().optional(),
+  excludeSoftwareIds: z.array(z.string().trim().max(100)).max(500).optional(),
+  excludeNodeIds: z.array(z.string().trim().max(100)).max(500).optional(),
+});
+
+const knowledgeSoftwareScopeSchema = z.object({
+  ids: z.array(z.string().trim().max(100)).max(500).optional(),
+  category: z.string().trim().max(120).optional().nullable(),
+  watchStatus: z.enum(['active', 'paused', 'archived']).optional().nullable(),
+  selection: z
+    .enum(['all', 'watchlist', 'unlinked', 'linked_without_markdown', 'linked_draft'])
+    .optional(),
+});
+
+const knowledgeNodeScopeSchema = z.object({
+  ids: z.array(z.string().trim().max(100)).max(1000).optional(),
+  domainId: z.string().trim().max(100).optional().nullable(),
+  parentId: z.string().trim().max(100).optional().nullable(),
+  includeSubtree: z.boolean().optional(),
+  nodeType: z.enum(techNodeTypes).optional().nullable(),
+  selection: z.enum(['all', 'no_body', 'draft', 'needs_review', 'unlinked']).optional(),
+});
+
+const knowledgeBuildRequestSchema = z.object({
+  scopeType: z.enum(knowledgeScopeTypes),
+  software: knowledgeSoftwareScopeSchema.optional(),
+  nodes: knowledgeNodeScopeSchema.optional(),
+  newNode: z
+    .object({
+      domainId: z.string().trim().min(1).max(100),
+      parentId: z.string().trim().max(100).optional().nullable(),
+      name: z.string().trim().min(1).max(120),
+      nodeType: z.enum(techNodeTypes),
+      summary: z.string().trim().max(1000).optional().nullable(),
+    })
+    .optional(),
+  filters: knowledgeBuildFiltersSchema.optional(),
+  templateKey: z.enum(knowledgeTemplateKeys).optional(),
+  mapping: z
+    .object({
+      domainId: z.string().trim().max(100).optional().nullable(),
+      parentId: z.string().trim().max(100).optional().nullable(),
+      nodeType: z.enum(techNodeTypes).optional().nullable(),
+      nodeId: z.string().trim().max(100).optional().nullable(),
+      linkStrategy: z.enum(knowledgeLinkStrategies).optional(),
+      nameTemplate: z.string().trim().max(200).optional().nullable(),
+    })
+    .optional(),
+  sources: z
+    .object({
+      docsUrl: techUrl,
+      referenceLinks: z.array(techLinkSchema).max(20).optional(),
+    })
+    .optional(),
+  confirmed: z.boolean().optional(),
+  previewHash: z.string().trim().max(128).optional(),
+});
+
+const knowledgeBuildRuleSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  enabled: z.boolean().optional(),
+  targetType: z.enum(knowledgeTargetTypes),
+  triggerType: z.enum(knowledgeTriggerTypes),
+  scopeType: z.enum(knowledgeScopeTypes),
+  scopeConfig: z
+    .object({
+      ids: z.array(z.string().trim().max(100)).max(500).optional(),
+      category: z.string().trim().max(120).optional().nullable(),
+      watchStatus: z.enum(['active', 'paused', 'archived']).optional().nullable(),
+      selection: z.string().trim().max(40).optional(),
+      domainId: z.string().trim().max(100).optional().nullable(),
+      parentId: z.string().trim().max(100).optional().nullable(),
+      nodeType: z.enum(techNodeTypes).optional().nullable(),
+      includeSubtree: z.boolean().optional(),
+    })
+    .passthrough()
+    .optional(),
+  mappingConfig: z
+    .object({
+      domainId: z.string().trim().max(100).optional().nullable(),
+      parentId: z.string().trim().max(100).optional().nullable(),
+      nodeType: z.enum(techNodeTypes).optional().nullable(),
+      nodeId: z.string().trim().max(100).optional().nullable(),
+      linkStrategy: z.enum(knowledgeLinkStrategies).optional(),
+      nameTemplate: z.string().trim().max(200).optional().nullable(),
+    })
+    .optional(),
+  templateKey: z.enum(knowledgeTemplateKeys),
+  sourceConfig: z
+    .object({
+      docsUrl: techUrl,
+      referenceLinks: z.array(techLinkSchema).max(20).optional(),
+    })
+    .optional(),
+});
+
+const knowledgeUrlCheckSchema = z.object({
+  urls: z.array(z.string().trim().min(1).max(1000)).min(1).max(20),
+});
+
+const knowledgeLintSchema = z.object({
+  nodeId: z.string().trim().min(1).max(100),
+  checkUrls: z.boolean().optional(),
+});
+
 const techRelationSchema = z.object({
   sourceNodeId: z.string().trim().min(1).max(100),
   targetNodeId: z.string().trim().min(1).max(100),
@@ -590,7 +728,7 @@ function sendDiscoveryError(res: any, error: unknown): boolean {
 }
 
 function sendTechError(res: any, error: unknown): boolean {
-  if (error instanceof TechRequestError) {
+  if (error instanceof TechRequestError || error instanceof KnowledgeBuildError) {
     res.status(error.status).json({ error: error.message });
     return true;
   }
@@ -691,6 +829,14 @@ router.post('/software', (req, res) => {
     void syncSoftware(id, { trigger: 'initial' }).catch((error) => {
       console.error('[initial sync]', error);
     });
+
+    // Automatic knowledge rules never make software creation fail. Unresolved
+    // targets become pending candidates instead of guessed nodes.
+    try {
+      runKnowledgeBuildRules('software_created', { softwareId: id });
+    } catch (ruleError) {
+      console.error('[knowledge build] software rule failed', ruleError);
+    }
 
     res.status(201).json({ id, software: getSoftwareSummary(id) });
   } catch (error) {
@@ -1266,7 +1412,13 @@ router.post('/tech/domains/:id/nodes', (req, res) => {
   const body = parseBody(techNodeSchema, req.body, res);
   if (!body) return;
   try {
-    res.status(201).json(createNode(req.params.id, body));
+    const created = createNode(req.params.id, body);
+    res.status(201).json(created);
+    try {
+      runKnowledgeBuildRules('node_created', { nodeId: created.id });
+    } catch (ruleError) {
+      console.error('[knowledge build] node rule failed', ruleError);
+    }
   } catch (error) {
     if (!sendTechError(res, error)) throw error;
   }
@@ -1370,6 +1522,98 @@ router.post('/tech/nodes/:id/verify', (req, res) => {
   if (!body) return;
   try {
     res.json(verifyNodeContent(req.params.id, body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+/* --------------------------- Knowledge Build --------------------------- */
+
+router.get('/tech/knowledge-build/templates', (_req, res) => {
+  res.json(KNOWLEDGE_BUILD_TEMPLATES);
+});
+
+router.post('/tech/knowledge-build/preview', (req, res) => {
+  const body = parseBody(knowledgeBuildRequestSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(previewKnowledgeBuild(body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/knowledge-build/execute', (req, res) => {
+  const body = parseBody(knowledgeBuildRequestSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(executeKnowledgeBuild(body));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/knowledge-build/check-urls', async (req, res) => {
+  const body = parseBody(knowledgeUrlCheckSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json({ results: await checkKnowledgeUrls(body.urls) });
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.get('/tech/knowledge-build/rules', (_req, res) => {
+  res.json(listKnowledgeBuildRules());
+});
+
+router.post('/tech/knowledge-build/rules', (req, res) => {
+  const body = parseBody(knowledgeBuildRuleSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.status(201).json(createKnowledgeBuildRule(body as never));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.patch('/tech/knowledge-build/rules/:id', (req, res) => {
+  const body = parseBody(knowledgeBuildRuleSchema.partial(), req.body, res);
+  if (!body) return;
+  try {
+    res.json(updateKnowledgeBuildRule(req.params.id, body as never));
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.delete('/tech/knowledge-build/rules/:id', (req, res) => {
+  try {
+    deleteKnowledgeBuildRule(req.params.id);
+    res.json({ ok: true });
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.get('/tech/knowledge-build/pending', (_req, res) => {
+  res.json(listKnowledgeBuildPending());
+});
+
+router.delete('/tech/knowledge-build/pending/:id', (req, res) => {
+  try {
+    dismissKnowledgeBuildPending(req.params.id);
+    res.json({ ok: true });
+  } catch (error) {
+    if (!sendTechError(res, error)) throw error;
+  }
+});
+
+router.post('/tech/knowledge-build/lint', async (req, res) => {
+  const body = parseBody(knowledgeLintSchema, req.body, res);
+  if (!body) return;
+  try {
+    res.json(await lintNodeKnowledge(body.nodeId, { checkUrls: body.checkUrls }));
   } catch (error) {
     if (!sendTechError(res, error)) throw error;
   }

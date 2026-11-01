@@ -1094,3 +1094,240 @@ export interface TechTemplateApplyResult {
     links: number;
   };
 }
+
+/* --------------------------- Knowledge Build --------------------------- */
+
+export type KnowledgeBuildScopeType = 'software' | 'nodes' | 'combined' | 'new';
+export type KnowledgeBuildTemplateKey =
+  | 'component-l2-v1'
+  | 'concept-l2-v1'
+  | 'protocol-l2-v1'
+  | 'resource-l2-v1'
+  | 'practice-l2-v1';
+export type KnowledgeBuildTargetType = 'software' | 'node' | 'combined';
+export type KnowledgeBuildTriggerType = 'software_created' | 'node_created';
+export type KnowledgeBuildLinkStrategy = 'link_existing' | 'create_node' | 'none';
+
+export interface KnowledgeBuildFilters {
+  onlyMissing?: boolean;
+  onlyDraft?: boolean;
+  /** Always enforced by the server; present for an explicit, visible contract. */
+  skipExistingBody?: boolean;
+  skipVerified?: boolean;
+  activeOnly?: boolean;
+  skipArchived?: boolean;
+  excludeSoftwareIds?: string[];
+  excludeNodeIds?: string[];
+}
+
+export interface KnowledgeBuildSoftwareScope {
+  ids?: string[];
+  category?: string | null;
+  watchStatus?: WatchStatus | null;
+  selection?: 'all' | 'watchlist' | 'unlinked' | 'linked_without_markdown' | 'linked_draft';
+}
+
+export interface KnowledgeBuildNodeScope {
+  ids?: string[];
+  domainId?: string | null;
+  parentId?: string | null;
+  includeSubtree?: boolean;
+  nodeType?: TechNodeType | null;
+  selection?: 'all' | 'no_body' | 'draft' | 'needs_review' | 'unlinked';
+}
+
+export interface KnowledgeBuildNewNode {
+  domainId: string;
+  parentId?: string | null;
+  name: string;
+  nodeType: TechNodeType;
+  summary?: string | null;
+}
+
+export interface KnowledgeBuildSourceInput {
+  docsUrl?: string | null;
+  referenceLinks?: TechExternalLink[];
+}
+
+export interface KnowledgeBuildMapping {
+  domainId?: string | null;
+  parentId?: string | null;
+  nodeType?: TechNodeType | null;
+  /** Explicit existing node for the "link_existing" strategy. */
+  nodeId?: string | null;
+  linkStrategy?: KnowledgeBuildLinkStrategy;
+  /** Only `{name}` is substituted. No free-form generation. */
+  nameTemplate?: string | null;
+}
+
+export interface KnowledgeBuildRequest {
+  scopeType: KnowledgeBuildScopeType;
+  software?: KnowledgeBuildSoftwareScope;
+  nodes?: KnowledgeBuildNodeScope;
+  newNode?: KnowledgeBuildNewNode;
+  filters?: KnowledgeBuildFilters;
+  templateKey?: KnowledgeBuildTemplateKey;
+  mapping?: KnowledgeBuildMapping;
+  sources?: KnowledgeBuildSourceInput;
+  confirmed?: boolean;
+  previewHash?: string;
+}
+
+export type KnowledgeBuildPreviewAction =
+  | 'create_node'
+  | 'link_existing'
+  | 'initialize_doc'
+  | 'skip'
+  | 'pending';
+
+export interface KnowledgeBuildPreviewItem {
+  key: string;
+  action: KnowledgeBuildPreviewAction;
+  softwareId: string | null;
+  softwareName: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
+  domainId: string | null;
+  domainName: string | null;
+  nodeType: TechNodeType | null;
+  templateKey: KnowledgeBuildTemplateKey | null;
+  reason: string | null;
+}
+
+export interface KnowledgeBuildPreviewCounts {
+  selectedSoftware: number;
+  selectedNodes: number;
+  linkedNodes: number;
+  unlinkedSoftware: number;
+  createNode: number;
+  linkExisting: number;
+  initializeDoc: number;
+  skip: number;
+  pending: number;
+  missingOfficialSource: number;
+  needsParent: number;
+}
+
+export interface KnowledgeBuildPreview {
+  scopeType: KnowledgeBuildScopeType;
+  previewHash: string;
+  counts: KnowledgeBuildPreviewCounts;
+  items: KnowledgeBuildPreviewItem[];
+  warnings: string[];
+}
+
+export type KnowledgeBuildResultStatus =
+  | 'created'
+  | 'linked'
+  | 'initialized'
+  | 'skipped'
+  | 'pending'
+  | 'failed';
+
+export interface KnowledgeBuildResultItem {
+  key: string;
+  status: KnowledgeBuildResultStatus;
+  message: string;
+  softwareId: string | null;
+  softwareName: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
+}
+
+export interface KnowledgeBuildResult {
+  runAt: string;
+  previewHash: string;
+  counts: Record<KnowledgeBuildResultStatus, number>;
+  items: KnowledgeBuildResultItem[];
+}
+
+export interface KnowledgeBuildRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  targetType: KnowledgeBuildTargetType;
+  triggerType: KnowledgeBuildTriggerType;
+  scopeType: KnowledgeBuildScopeType;
+  scopeConfig: KnowledgeBuildSoftwareScope & KnowledgeBuildNodeScope;
+  mappingConfig: KnowledgeBuildMapping;
+  templateKey: KnowledgeBuildTemplateKey;
+  sourceConfig: KnowledgeBuildSourceInput;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeBuildRuleInput {
+  name: string;
+  enabled?: boolean;
+  targetType: KnowledgeBuildTargetType;
+  triggerType: KnowledgeBuildTriggerType;
+  scopeType: KnowledgeBuildScopeType;
+  scopeConfig?: KnowledgeBuildSoftwareScope & KnowledgeBuildNodeScope;
+  mappingConfig?: KnowledgeBuildMapping;
+  templateKey: KnowledgeBuildTemplateKey;
+  sourceConfig?: KnowledgeBuildSourceInput;
+}
+
+export interface KnowledgeBuildPendingCandidate {
+  id: string;
+  ruleId: string | null;
+  sourceType: string;
+  sourceId: string;
+  name: string;
+  reason: string;
+  payload: Record<string, unknown>;
+  status: 'pending' | 'resolved' | 'dismissed';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeBuildTemplateSection {
+  key: string;
+  title: string;
+  prompt: string;
+}
+
+export interface KnowledgeBuildTemplate {
+  key: KnowledgeBuildTemplateKey;
+  version: number;
+  name: string;
+  description: string;
+  nodeType: TechNodeType;
+  sections: KnowledgeBuildTemplateSection[];
+}
+
+export type KnowledgeLintSeverity = 'pass' | 'warning' | 'fail';
+
+export interface KnowledgeLintItem {
+  rule: string;
+  severity: KnowledgeLintSeverity;
+  message: string;
+}
+
+export interface KnowledgeLintResult {
+  nodeId: string;
+  status: KnowledgeLintSeverity;
+  items: KnowledgeLintItem[];
+}
+
+export type KnowledgeUrlStatus =
+  | 'ok'
+  | 'redirect'
+  | 'unreachable'
+  | 'blocked'
+  | 'invalid';
+
+export interface KnowledgeUrlCheckResult {
+  url: string;
+  status: KnowledgeUrlStatus;
+  httpStatus: number | null;
+  finalUrl: string | null;
+  title: string | null;
+  redirects: string[];
+  error: string | null;
+  /** Reachability is not a statement about technical correctness. */
+  warning: string | null;
+}

@@ -633,6 +633,43 @@ CREATE TABLE IF NOT EXISTS tech_content_seed (
   version INTEGER NOT NULL DEFAULT 1,
   applied_at TEXT NOT NULL
 );
+
+/* --------------------------- Knowledge Build --------------------------- */
+-- Rules that may initialize documents when software or tech nodes are created.
+-- They are deliberately separate from "content seeds": rules are user data and
+-- must survive restarts, while seeds are built-in initial knowledge.
+CREATE TABLE IF NOT EXISTS tech_knowledge_build_rules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  target_type TEXT NOT NULL,
+  trigger_type TEXT NOT NULL,
+  scope_type TEXT NOT NULL,
+  scope_config TEXT NOT NULL DEFAULT '{}',
+  mapping_config TEXT NOT NULL DEFAULT '{}',
+  template_key TEXT NOT NULL,
+  source_config TEXT NOT NULL DEFAULT '{}',
+  last_run_at TEXT,
+  last_run_status TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- A rule that cannot determine a safe target must not guess. The candidate is
+-- persisted so the user can finish the decision later.
+CREATE TABLE IF NOT EXISTS tech_knowledge_build_pending (
+  id TEXT PRIMARY KEY,
+  rule_id TEXT,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 // Forward-compatible migration for databases created by earlier releases.
@@ -694,6 +731,10 @@ CREATE INDEX IF NOT EXISTS idx_tech_node_software_software ON tech_node_software
 CREATE INDEX IF NOT EXISTS idx_tech_node_radar_radar ON tech_node_radar(radar_item_id);
 CREATE INDEX IF NOT EXISTS idx_tech_node_discovery_candidate ON tech_node_discovery(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_note_tech_node ON knowledge_note(tech_node_id);
+CREATE INDEX IF NOT EXISTS idx_tech_build_rules_trigger
+  ON tech_knowledge_build_rules(enabled, trigger_type);
+CREATE INDEX IF NOT EXISTS idx_tech_build_pending_status
+  ON tech_knowledge_build_pending(status, created_at DESC);
 `);
 
 const seedTimestamp = new Date().toISOString();

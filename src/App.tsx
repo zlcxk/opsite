@@ -21,6 +21,7 @@ import { TechOverview } from './pages/TechOverview';
 import { TechDomain } from './pages/TechDomain';
 import { TechNode } from './pages/TechNode';
 import { TechView } from './pages/TechView';
+import { KnowledgeBuild } from './pages/KnowledgeBuild';
 import { Settings } from './pages/Settings';
 import { OperationsOverviewPage } from './pages/OperationsOverview';
 import { OperationsSourcesPage } from './pages/OperationsSources';
@@ -69,6 +70,7 @@ export default function App() {
               <Route path="discover/:id" element={<DiscoverDetail />} />
               <Route path="knowledge" element={<Knowledge />} />
               <Route path="tech" element={<TechOverview />} />
+              <Route path="tech/build" element={<KnowledgeBuild />} />
               <Route path="tech/domains/:id" element={<TechDomain />} />
               <Route path="tech/nodes/:id" element={<TechNode />} />
               <Route path="tech/views/:id" element={<TechView />} />

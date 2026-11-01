@@ -634,7 +634,15 @@ export function SoftwareDetail() {
               <span className="eyebrow">Linked knowledge</span>
               <h3>关联技术知识</h3>
             </div>
-            <Network size={15} />
+            <div className="software-tech-head-actions">
+              <Link
+                to={`/tech/build?softwareId=${encodeURIComponent(software.id)}`}
+                className="btn btn-ghost btn-sm"
+              >
+                <BookOpen size={12} /> 建档 / 初始化
+              </Link>
+              <Network size={15} />
+            </div>
           </div>
           <div className="panel-body">
             {data.techNodes.length === 0 ? (

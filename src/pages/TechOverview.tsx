@@ -138,6 +138,9 @@ export function TechOverview() {
         subtitle="把技术体系画成可以逐层展开的树和图，再把自己的理解、掌握程度和问题留在一个个节点上。"
         actions={
           <>
+            <Link to="/tech/build" className="btn btn-secondary">
+              <BookOpenCheck size={14} /> 知识建档
+            </Link>
             <button className="btn btn-secondary" onClick={() => setTemplateOpen(true)}>
               <Sparkles size={14} /> 技术模板
             </button>

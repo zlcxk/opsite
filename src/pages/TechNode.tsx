@@ -16,11 +16,13 @@ import {
   Plus,
   Save,
   Search,
+  ShieldCheck,
   Star,
   Trash2,
   X,
 } from 'lucide-react';
 import type {
+  KnowledgeLintResult,
   TechMasteryStatus,
   TechNodeDetail,
   TechNodeListResponse,
@@ -97,6 +99,9 @@ export function TechNode() {
     verifying: false,
   });
   const docEditorRef = useRef<TechDocEditorHandle | null>(null);
+  const [lintOpen, setLintOpen] = useState(false);
+  const [lintBusy, setLintBusy] = useState(false);
+  const [lintResult, setLintResult] = useState<KnowledgeLintResult | null>(null);
 
   useEffect(() => {
     if (!data) return;
@@ -156,6 +161,22 @@ export function TechNode() {
   const applySavedDoc = (saved: TechNodeDetail['node']) => {
     if (!data) return;
     setData({ ...data, node: saved });
+  };
+
+  const runLint = async () => {
+    if (!node) return;
+    setLintOpen(true);
+    setLintBusy(true);
+    try {
+      setLintResult(
+        await api.post<KnowledgeLintResult>('/tech/knowledge-build/lint', { nodeId: node.id }),
+      );
+    } catch (lintError) {
+      push(lintError instanceof Error ? lintError.message : '文档体检失败', 'error');
+      setLintOpen(false);
+    } finally {
+      setLintBusy(false);
+    }
   };
 
   const updateCognition = async (patch: { masteryStatus?: TechMasteryStatus; focusLevel?: 'normal' | 'focus' }) => {
@@ -341,6 +362,15 @@ export function TechNode() {
         subtitle={node.summary || '这个节点还没有一句话摘要。'}
         actions={
           <>
+            <button className="btn btn-secondary" onClick={() => void runLint()}>
+              <ShieldCheck size={13} /> 文档体检
+            </button>
+            <Link
+              to={`/tech/build?nodeId=${encodeURIComponent(node.id)}`}
+              className="btn btn-secondary"
+            >
+              <Plus size={13} /> 初始化 / 补充文档
+            </Link>
             <button className="btn btn-secondary" onClick={() => setEditOpen(true)}>
               <Pencil size={13} /> 编辑节点
             </button>
@@ -947,6 +977,50 @@ export function TechNode() {
           onBusyChange={setDocBusy}
           minHeight={460}
         />
+      </Modal>
+
+      <Modal
+        open={lintOpen}
+        onClose={() => setLintOpen(false)}
+        eyebrow="Knowledge linter"
+        title={`${node.name} · 文档体检`}
+        description="只检查结构、来源与占位提示，不修改正文，也不会改变文档状态。"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <button className="btn btn-secondary" onClick={() => void runLint()} disabled={lintBusy}>
+              {lintBusy ? '检查中…' : '重新检查'}
+            </button>
+            <button className="btn btn-primary" onClick={() => setLintOpen(false)}>
+              关闭
+            </button>
+          </div>
+        }
+      >
+        {lintBusy && !lintResult ? (
+          <div className="loading-block" style={{ minHeight: 160 }} />
+        ) : lintResult ? (
+          <div className="kb-lint">
+            <div className="kb-lint-summary">
+              <span className={`pill ${lintResult.status === 'pass' ? 'pill-calm' : lintResult.status === 'warning' ? 'pill-warn' : 'pill-danger'}`}>
+                {lintResult.status === 'pass' ? '通过' : lintResult.status === 'warning' ? '有警告' : '不通过'}
+              </span>
+              <span className="field-hint">体检结果不会自动把文档标记为已完善。</span>
+            </div>
+            <div className="kb-lint-items">
+              {lintResult.items.map((item, index) => (
+                <div key={`${item.rule}-${index}`} className={`kb-lint-item is-${item.severity}`}>
+                  <span className={`pill ${item.severity === 'pass' ? 'pill-calm' : item.severity === 'warning' ? 'pill-warn' : 'pill-danger'}`}>
+                    {item.severity === 'pass' ? '通过' : item.severity === 'warning' ? '警告' : '不通过'}
+                  </span>
+                  <div>
+                    <strong>{item.rule}</strong>
+                    <p>{item.message}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </Modal>
 
       <Modal
