@@ -7269,11 +7269,49 @@ a {
 .md-body ul,
 .md-body ol {
   margin: 0.55em 0;
-  padding-left: 1.4em;
+  padding-left: 1.6em;
+}
+
+/* Tailwind's Preflight removes list markers; restore them for rendered docs. */
+.md-body ul {
+  list-style: disc outside;
+}
+
+.md-body ul ul {
+  list-style-type: circle;
+}
+
+.md-body ul ul ul {
+  list-style-type: square;
+}
+
+.md-body ol {
+  list-style: decimal outside;
+}
+
+.md-body ol ol {
+  list-style-type: lower-alpha;
+}
+
+.md-body ol ol ol {
+  list-style-type: lower-roman;
 }
 
 .md-body li {
   margin: 0.18em 0;
+}
+
+.md-body li::marker {
+  color: var(--muted);
+}
+
+.md-body li > p {
+  margin: 0.18em 0;
+}
+
+.md-body li > ul,
+.md-body li > ol {
+  margin: 0.2em 0;
 }
 
 .md-body li.task-list-item {
