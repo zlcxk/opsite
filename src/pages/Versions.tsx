@@ -322,13 +322,24 @@ export function Versions() {
                                 当前
                               </span>
                             )}
+                            {row.activeSupportEnd && (
+                              <span className="lifecycle-phase-note">主动支持至 {formatDate(row.activeSupportEnd)}</span>
+                            )}
+                            {row.maintenanceSupportEnd && (
+                              <span className="lifecycle-phase-note">维护支持至 {formatDate(row.maintenanceSupportEnd)}</span>
+                            )}
                           </span>
                           <span className={row.supportStatus === 'eol' ? 'text-[var(--critical)]' : 'muted-cell'}>
-                            {row.eolDate
-                              ? row.supportStatus === 'eol' || row.supportStatus === 'approaching_eol'
-                                ? eolLabel(row.eolDate)
-                                : formatDate(row.eolDate)
-                              : '未公布'}
+                            <span className="block">
+                              {row.eolDate
+                                ? row.supportStatus === 'eol' || row.supportStatus === 'approaching_eol'
+                                  ? eolLabel(row.eolDate)
+                                  : formatDate(row.eolDate)
+                                : '未公布'}
+                            </span>
+                            {row.vendorSupportEnd && (
+                              <span className="lifecycle-vendor-note">厂商支持 {formatDate(row.vendorSupportEnd)}</span>
+                            )}
                           </span>
                           <span className="muted-cell hide-md">{row.latestVersion ?? '—'}</span>
                           <span>

@@ -145,18 +145,24 @@ function handleLifecycle(
   let created = 0;
   let updated = 0;
   const findExisting = db.prepare(
-    `SELECT release_date, latest_version, latest_release_date, eol_date, support_status, source_url
+    `SELECT release_date, latest_version, latest_release_date, eol_date, support_status,
+       active_support_end, maintenance_support_end, vendor_support_end, parse_warnings, source_url
      FROM lifecycle_record WHERE software_id = ? AND source_id = ? AND cycle = ?`,
   );
   const upsert = db.prepare(
     `INSERT INTO lifecycle_record
       (id, software_id, source_id, cycle, release_date, latest_version, latest_release_date,
-       eol_date, eol_raw, support_status, source_url, fetched_at, raw)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       eol_date, eol_raw, support_status, active_support_end, maintenance_support_end,
+       vendor_support_end, parse_warnings, source_url, fetched_at, raw)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(software_id, source_id, cycle) DO UPDATE SET
        release_date = excluded.release_date, latest_version = excluded.latest_version,
        latest_release_date = excluded.latest_release_date, eol_date = excluded.eol_date,
        eol_raw = excluded.eol_raw, support_status = excluded.support_status,
+       active_support_end = excluded.active_support_end,
+       maintenance_support_end = excluded.maintenance_support_end,
+       vendor_support_end = excluded.vendor_support_end,
+       parse_warnings = excluded.parse_warnings,
        source_url = excluded.source_url, fetched_at = excluded.fetched_at, raw = excluded.raw`,
   );
   const currentCycle = software.current_version
@@ -171,9 +177,19 @@ function handleLifecycle(
           latest_release_date: string | null;
           eol_date: string | null;
           support_status: string;
+          active_support_end: string | null;
+          maintenance_support_end: string | null;
+          vendor_support_end: string | null;
+          parse_warnings: string | null;
           source_url: string | null;
         }
       | undefined;
+    const warningsJson = row.warnings.length ? JSON.stringify(row.warnings) : null;
+    if (row.warnings.length) {
+      console.warn(
+        `[lifecycle] ${software.name} ${row.cycle}: ${row.warnings.length} 条解析提示，原始字段已保留`,
+      );
+    }
     upsert.run(
       crypto.randomUUID(),
       software.id,
@@ -185,6 +201,10 @@ function handleLifecycle(
       row.eolDate,
       JSON.stringify(row.raw),
       row.supportStatus,
+      row.activeSupportEnd,
+      row.maintenanceSupportEnd,
+      row.vendorSupportEnd,
+      warningsJson,
       row.sourceUrl,
       nowIso(),
       JSON.stringify(row.raw),
@@ -198,6 +218,10 @@ function handleLifecycle(
       previous.latest_release_date !== row.latestReleaseDate ||
       previous.eol_date !== row.eolDate ||
       previous.support_status !== row.supportStatus ||
+      previous.active_support_end !== row.activeSupportEnd ||
+      previous.maintenance_support_end !== row.maintenanceSupportEnd ||
+      previous.vendor_support_end !== row.vendorSupportEnd ||
+      previous.parse_warnings !== warningsJson ||
       previous.source_url !== row.sourceUrl
     ) {
       updated += 1;
@@ -214,7 +238,7 @@ function handleLifecycle(
         softwareId: software.id,
         refId: `${row.cycle}`,
         title: `${software.name} ${row.cycle} ${label}`,
-        summary: row.eolDate ? `维护截止日期：${row.eolDate}` : '来源未提供维护截止日期',
+        summary: row.eolDate ? `上游 EOL 日期：${row.eolDate}` : '来源未提供上游 EOL 日期',
         priority: row.supportStatus === 'eol' ? 'P1' : 'P2',
         sourceName: sourceName(source.type),
         sourceUrl: row.sourceUrl,

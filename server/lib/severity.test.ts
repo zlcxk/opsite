@@ -4,7 +4,6 @@ import {
   daysUntil,
   normalizeSeverity,
   severityFromScore,
-  supportStatusFromEol,
 } from './severity.js';
 
 describe('severity normalization', () => {
@@ -34,25 +33,10 @@ describe('computePriority', () => {
   });
 });
 
-describe('supportStatusFromEol', () => {
+describe('daysUntil', () => {
   const now = new Date('2026-10-29T00:00:00Z');
 
-  it('treats an upstream false EOL as ended', () => {
-    expect(supportStatusFromEol(false, null, now)).toEqual({ status: 'eol', eolDate: null });
-  });
-
-  it('flags approaching EOL inside the threshold', () => {
-    expect(supportStatusFromEol('2027-03-01', null, now).status).toBe('approaching_eol');
-    expect(supportStatusFromEol('2028-01-01', null, now).status).toBe('supported');
-    expect(supportStatusFromEol('2026-02-28', null, now).status).toBe('eol');
-  });
-
-  it('returns unknown when no trusted date exists', () => {
-    expect(supportStatusFromEol(null, null, now)).toEqual({ status: 'unknown', eolDate: null });
-    expect(supportStatusFromEol('not a date', null, now)).toEqual({ status: 'unknown', eolDate: null });
-  });
-
-  it('computes whole days to the end of the EOL day', () => {
+  it('computes whole days to the end of the day', () => {
     expect(daysUntil('2026-10-30', now)).toBe(2);
     expect(daysUntil('2026-02-28', now)).toBeLessThan(0);
     expect(daysUntil(null, now)).toBeNull();

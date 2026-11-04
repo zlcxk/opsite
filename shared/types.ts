@@ -60,7 +60,11 @@ export interface SoftwareSource {
 export interface LifecycleView {
   status: SupportStatus;
   cycle: string | null;
+  /** Upstream EOL only. Vendor support deadlines are reported separately. */
   eolDate: string | null;
+  activeSupportEnd: string | null;
+  maintenanceSupportEnd: string | null;
+  vendorSupportEnd: string | null;
   latestPatch: string | null;
   sourceUrl: string | null;
   lastVerifiedAt: string | null;
@@ -121,6 +125,9 @@ export interface LifecycleRecord {
   latestVersion: string | null;
   latestReleaseDate: string | null;
   eolDate: string | null;
+  activeSupportEnd: string | null;
+  maintenanceSupportEnd: string | null;
+  vendorSupportEnd: string | null;
   supportStatus: SupportStatus;
   sourceUrl: string | null;
   fetchedAt: string;

@@ -43,47 +43,6 @@ export function isOpenAdvisory(status: string): boolean {
   return status !== 'fixed' && status !== 'not_affected' && status !== 'ignored';
 }
 
-export function supportStatusFromEol(
-  eolRaw: unknown,
-  supportRaw: unknown,
-  now = new Date(),
-  approachingDays = 180,
-): { status: SupportStatus; eolDate: string | null } {
-  const candidate = normalizeDateCandidate(eolRaw);
-  const supportCandidate = normalizeDateCandidate(supportRaw);
-
-  if (candidate === false || supportCandidate === false) {
-    return { status: 'eol', eolDate: supportCandidate || null };
-  }
-
-  const dateValue = candidate || supportCandidate;
-  if (!dateValue) {
-    return { status: 'unknown', eolDate: null };
-  }
-
-  const date = new Date(dateValue.includes('T') ? dateValue : `${dateValue}T23:59:59Z`);
-  if (Number.isNaN(date.getTime())) {
-    return { status: 'unknown', eolDate: null };
-  }
-  const diffMs = date.getTime() - now.getTime();
-  const diffDays = diffMs / 86_400_000;
-  if (diffDays <= 0) return { status: 'eol', eolDate: dateValue };
-  if (diffDays <= approachingDays) return { status: 'approaching_eol', eolDate: dateValue };
-  return { status: 'supported', eolDate: dateValue };
-}
-
-function normalizeDateCandidate(value: unknown): string | false | null {
-  if (value === false) return false;
-  if (value === true) return new Date().toISOString().slice(0, 10);
-  if (typeof value === 'string' && value.trim()) {
-    const text = value.trim();
-    if (text.toLowerCase() === 'false') return false;
-    if (text.toLowerCase() === 'true') return new Date().toISOString().slice(0, 10);
-    return text.slice(0, 10);
-  }
-  return null;
-}
-
 export function daysUntil(date: string | null, now = new Date()): number | null {
   if (!date) return null;
   const parsed = new Date(date.length > 10 ? date : `${date}T23:59:59Z`);

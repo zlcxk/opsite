@@ -5,9 +5,15 @@ export interface RawLifecycle {
   releaseDate: string | null;
   latestVersion: string | null;
   latestReleaseDate: string | null;
+  /** End of upstream maintenance/support. Never a vendor support deadline. */
   eolDate: string | null;
+  activeSupportEnd: string | null;
+  maintenanceSupportEnd: string | null;
+  /** Third-party or extended support deadline, kept separate from upstream EOL. */
+  vendorSupportEnd: string | null;
   supportStatus: 'supported' | 'approaching_eol' | 'eol' | 'unknown';
   sourceUrl: string;
+  warnings: string[];
   raw: unknown;
 }
 

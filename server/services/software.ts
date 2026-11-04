@@ -63,6 +63,10 @@ interface LifecycleRow {
   eol_date: string | null;
   eol_raw: string | null;
   support_status: 'supported' | 'approaching_eol' | 'eol' | 'unknown';
+  active_support_end: string | null;
+  maintenance_support_end: string | null;
+  vendor_support_end: string | null;
+  parse_warnings: string | null;
   source_url: string | null;
   fetched_at: string;
   source_id: string | null;
@@ -119,6 +123,9 @@ function getLifecycleView(
       status: 'unknown',
       cycle: null,
       eolDate: null,
+      activeSupportEnd: null,
+      maintenanceSupportEnd: null,
+      vendorSupportEnd: null,
       latestPatch: null,
       sourceUrl: null,
       lastVerifiedAt: null,
@@ -131,6 +138,9 @@ function getLifecycleView(
       status: 'unknown',
       cycle: null,
       eolDate: null,
+      activeSupportEnd: null,
+      maintenanceSupportEnd: null,
+      vendorSupportEnd: null,
       latestPatch: null,
       sourceUrl: records[0]?.source_url ?? null,
       lastVerifiedAt: records[0]?.fetched_at ?? null,
@@ -148,6 +158,9 @@ function getLifecycleView(
     status: chosen.support_status,
     cycle: chosen.cycle,
     eolDate: chosen.eol_date,
+    activeSupportEnd: chosen.active_support_end,
+    maintenanceSupportEnd: chosen.maintenance_support_end,
+    vendorSupportEnd: chosen.vendor_support_end,
     latestPatch: chosen.latest_version,
     sourceUrl: chosen.source_url,
     lastVerifiedAt: chosen.fetched_at,
@@ -326,6 +339,9 @@ export function getSoftwareDetail(id: string): SoftwareDetail | null {
     latestVersion: item.latest_version,
     latestReleaseDate: item.latest_release_date,
     eolDate: item.eol_date,
+    activeSupportEnd: item.active_support_end,
+    maintenanceSupportEnd: item.maintenance_support_end,
+    vendorSupportEnd: item.vendor_support_end,
     supportStatus: item.support_status,
     sourceUrl: item.source_url,
     fetchedAt: item.fetched_at,

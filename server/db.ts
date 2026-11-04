@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS lifecycle_record (
   eol_date TEXT,
   eol_raw TEXT,
   support_status TEXT NOT NULL DEFAULT 'unknown',
+  active_support_end TEXT,
+  maintenance_support_end TEXT,
+  vendor_support_end TEXT,
+  parse_warnings TEXT,
   source_url TEXT,
   fetched_at TEXT NOT NULL,
   raw TEXT,
@@ -697,6 +701,10 @@ ensureColumn('radar_item', 'status', "TEXT NOT NULL DEFAULT 'pending'");
 ensureColumn('radar_item', 'updated_at', 'TEXT');
 ensureColumn('radar_item', 'last_evaluated_at', 'TEXT');
 ensureColumn('radar_item', 'archived_at', 'TEXT');
+ensureColumn('lifecycle_record', 'active_support_end', 'TEXT');
+ensureColumn('lifecycle_record', 'maintenance_support_end', 'TEXT');
+ensureColumn('lifecycle_record', 'vendor_support_end', 'TEXT');
+ensureColumn('lifecycle_record', 'parse_warnings', 'TEXT');
 ensureColumn('sync_job', 'run_id', 'TEXT');
 ensureColumn('sync_job', 'items_updated', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sync_job', 'items_skipped', 'INTEGER NOT NULL DEFAULT 0');

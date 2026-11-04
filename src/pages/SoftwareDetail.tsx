@@ -390,7 +390,9 @@ export function SoftwareDetail() {
           <div className="stat-foot">
             {software.lifecycle.eolDate
               ? `${software.lifecycle.cycle ? `周期 ${software.lifecycle.cycle} · ` : ''}EOL ${eolLabel(software.lifecycle.eolDate)}`
-              : '缺少可信 EOL 日期，不做推断'}
+              : software.lifecycle.vendorSupportEnd
+                ? `上游 EOL 未公布 · 厂商支持至 ${formatDate(software.lifecycle.vendorSupportEnd)}`
+                : '缺少可信 EOL 日期，不做推断'}
           </div>
         </div>
         <div className="stat-card">
@@ -560,12 +562,36 @@ export function SoftwareDetail() {
                   </span>
                 </div>
                 <div className="mini-list">
+                  {software.lifecycle.activeSupportEnd && (
+                    <div className="mini-row">
+                      <div className="mini-row-main">
+                        <strong>主动支持截止</strong>
+                        <span>{formatDate(software.lifecycle.activeSupportEnd)}</span>
+                      </div>
+                    </div>
+                  )}
+                  {software.lifecycle.maintenanceSupportEnd && (
+                    <div className="mini-row">
+                      <div className="mini-row-main">
+                        <strong>维护支持截止</strong>
+                        <span>{formatDate(software.lifecycle.maintenanceSupportEnd)}</span>
+                      </div>
+                    </div>
+                  )}
                   <div className="mini-row">
                     <div className="mini-row-main">
-                      <strong>EOL 日期</strong>
+                      <strong>上游 EOL 日期</strong>
                       <span>{software.lifecycle.eolDate ? formatDate(software.lifecycle.eolDate) : '来源未提供'}</span>
                     </div>
                   </div>
+                  {software.lifecycle.vendorSupportEnd && (
+                    <div className="mini-row">
+                      <div className="mini-row-main">
+                        <strong>厂商支持截止</strong>
+                        <span>{formatDate(software.lifecycle.vendorSupportEnd)}</span>
+                      </div>
+                    </div>
+                  )}
                   <div className="mini-row">
                     <div className="mini-row-main">
                       <strong>该周期最新补丁</strong>
@@ -841,13 +867,24 @@ export function SoftwareDetail() {
                         {meta.label}
                       </span>
                       {row.isCurrent && <span className="pill pill-signal" style={{ height: 18, fontSize: '0.65625rem' }}>当前</span>}
+                      {row.activeSupportEnd && (
+                        <span className="lifecycle-phase-note">主动支持至 {formatDate(row.activeSupportEnd)}</span>
+                      )}
+                      {row.maintenanceSupportEnd && (
+                        <span className="lifecycle-phase-note">维护支持至 {formatDate(row.maintenanceSupportEnd)}</span>
+                      )}
                     </span>
                     <span className={row.supportStatus === 'eol' ? 'text-[var(--critical)]' : 'muted-cell'}>
-                      {row.eolDate
-                        ? row.supportStatus === 'eol' || row.supportStatus === 'approaching_eol'
-                          ? eolLabel(row.eolDate)
-                          : formatDate(row.eolDate)
-                        : '未公布'}
+                      <span className="block">
+                        {row.eolDate
+                          ? row.supportStatus === 'eol' || row.supportStatus === 'approaching_eol'
+                            ? eolLabel(row.eolDate)
+                            : formatDate(row.eolDate)
+                          : '未公布'}
+                      </span>
+                      {row.vendorSupportEnd && (
+                        <span className="lifecycle-vendor-note">厂商支持 {formatDate(row.vendorSupportEnd)}</span>
+                      )}
                     </span>
                     <span className="muted-cell hide-md">{row.latestVersion ?? '—'}</span>
                     <span>
