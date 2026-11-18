@@ -580,6 +580,7 @@ export function Knowledge() {
                   node={techNode}
                   onSaved={updateTechSaved}
                   minHeight={380}
+                  initialViewMode="preview"
                 />
               </>
             ) : null}
@@ -686,6 +687,7 @@ export function Knowledge() {
                   aria-label="笔记标题"
                 />
                 <MarkdownWorkspace
+                  key={creating ? '__new__' : (selectedNoteId ?? '__draft__')}
                   value={draft.content}
                   onChange={(content) => {
                     setDraft((current) => ({ ...current, content }));
@@ -693,6 +695,7 @@ export function Knowledge() {
                   }}
                   onSave={() => void persistNote()}
                   minHeight={260}
+                  initialMode="preview"
                   placeholder="写下背景、结论与下一步。支持 Markdown，适合记录升级评估与排障过程。"
                   empty="还没有正文内容。切换到编辑模式开始记录。"
                 />

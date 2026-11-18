@@ -25,7 +25,7 @@ import {
   techNodeTypeLabels,
 } from '../lib/tech';
 import { useToast } from '../contexts/ToastContext';
-import { MarkdownWorkspace } from './markdown/MarkdownWorkspace';
+import { MarkdownWorkspace, type MarkdownViewMode } from './markdown/MarkdownWorkspace';
 
 export interface TechDocEditorBusy {
   saving: boolean;
@@ -88,9 +88,19 @@ export const TechDocEditor = forwardRef<
     onDirtyChange?: (dirty: boolean) => void;
     onBusyChange?: (busy: TechDocEditorBusy) => void;
     minHeight?: number;
+    /** Read-first surfaces can open existing documents in preview. */
+    initialViewMode?: MarkdownViewMode;
   }
 >(function TechDocEditor(
-  { node, autoSave = true, onSaved, onDirtyChange, onBusyChange, minHeight = 420 },
+  {
+    node,
+    autoSave = true,
+    onSaved,
+    onDirtyChange,
+    onBusyChange,
+    minHeight = 420,
+    initialViewMode = 'split',
+  },
   ref,
 ) {
   const { push } = useToast();
@@ -437,6 +447,7 @@ export const TechDocEditor = forwardRef<
         value={draft.markdown}
         onChange={updateMarkdown}
         minHeight={minHeight}
+        initialMode={initialViewMode}
         onSave={() => void save()}
         placeholder="按「定义 → 设计目的 → 机制 → 配置示例 → 排查 → 参考」组织内容…"
         empty="这份文档还没有内容。切换到编辑模式开始撰写。"

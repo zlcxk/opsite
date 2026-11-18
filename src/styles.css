@@ -7142,6 +7142,75 @@ a {
   border-right: 0;
 }
 
+/* Fullscreen uses the native Fullscreen API when available, and the same
+   fixed-position layout as an in-page fallback. */
+.md-workspace[data-fullscreen='true'] {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  border-radius: 0;
+  background: #fcfdfb;
+  box-shadow: 0 24px 80px rgba(15, 24, 18, 0.22);
+}
+
+.md-workspace[data-fullscreen='true'] .md-workspace-bar {
+  flex: none;
+  padding: 8px 14px;
+}
+
+.md-workspace[data-fullscreen='true'] .md-panes {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.md-workspace[data-fullscreen='true'] .md-pane {
+  height: 100%;
+  min-height: 0;
+}
+
+.md-workspace[data-fullscreen='true'] .md-editor {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.md-workspace[data-fullscreen='true'] .md-editor-host {
+  flex: 1;
+  min-height: 0;
+}
+
+.md-workspace[data-fullscreen='true'] .md-editor-host .cm-editor {
+  height: 100%;
+}
+
+.md-workspace[data-fullscreen='true'] .md-editor-host .cm-scroller {
+  max-height: none;
+  height: 100%;
+}
+
+.md-workspace[data-fullscreen='true'] .md-pane-preview {
+  height: 100%;
+  max-height: none;
+  padding: 28px 34px 56px;
+}
+
+/* Long-form reading stays comfortable on wide displays instead of running
+   edge to edge. */
+.md-workspace[data-fullscreen='true'] .md-body,
+.md-workspace[data-fullscreen='true'] .md-empty {
+  max-width: 920px;
+  margin-inline: auto;
+}
+
+.md-fullscreen-toggle {
+  flex: none;
+}
+
 .md-toolbar {
   display: flex;
   align-items: center;
@@ -7602,6 +7671,10 @@ a {
 
   .md-pane-preview {
     max-height: none;
+  }
+
+  .md-workspace[data-fullscreen='true'] .md-pane-preview {
+    padding: 18px 16px 40px;
   }
 
   .md-editor-host .cm-scroller {
