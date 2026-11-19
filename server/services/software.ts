@@ -13,6 +13,7 @@ import type {
   WatchStatus,
 } from '../../shared/types.js';
 import { db, getSetting, nowIso } from '../db.js';
+import { compareLifecycleItems, compareReleaseItems } from '../lib/order.js';
 import { SUPPORT_LABELS } from '../lib/severity.js';
 import { findCycle, maxVersion } from '../lib/version.js';
 import { getAdvisoryRowsForSoftware, mapAdvisory, refreshAdvisoryInsights } from './advisories.js';
@@ -327,47 +328,51 @@ export function getSoftwareDetail(id: string): SoftwareDetail | null {
     .prepare(
       `SELECT l.*, ss.type AS source_type FROM lifecycle_record l
        LEFT JOIN software_source ss ON ss.id = l.source_id
-       WHERE l.software_id = ? ORDER BY l.cycle DESC`,
+       WHERE l.software_id = ?`,
     )
     .all(id) as LifecycleRow[];
   const currentCycle = summary.lifecycle.cycle;
-  const lifecycle: LifecycleRecord[] = lifecycleRows.map((item) => ({
-    id: item.id,
-    softwareId: item.software_id,
-    cycle: item.cycle,
-    releaseDate: item.release_date,
-    latestVersion: item.latest_version,
-    latestReleaseDate: item.latest_release_date,
-    eolDate: item.eol_date,
-    activeSupportEnd: item.active_support_end,
-    maintenanceSupportEnd: item.maintenance_support_end,
-    vendorSupportEnd: item.vendor_support_end,
-    supportStatus: item.support_status,
-    sourceUrl: item.source_url,
-    fetchedAt: item.fetched_at,
-    isCurrent: item.cycle === currentCycle,
-  }));
+  const lifecycle: LifecycleRecord[] = lifecycleRows
+    .map((item) => ({
+      id: item.id,
+      softwareId: item.software_id,
+      cycle: item.cycle,
+      releaseDate: item.release_date,
+      latestVersion: item.latest_version,
+      latestReleaseDate: item.latest_release_date,
+      eolDate: item.eol_date,
+      activeSupportEnd: item.active_support_end,
+      maintenanceSupportEnd: item.maintenance_support_end,
+      vendorSupportEnd: item.vendor_support_end,
+      supportStatus: item.support_status,
+      sourceUrl: item.source_url,
+      fetchedAt: item.fetched_at,
+      isCurrent: item.cycle === currentCycle,
+    }))
+    .sort(compareLifecycleItems);
 
   const releaseRows = db
     .prepare(
       `SELECT r.*, ss.type AS source_type FROM release_record r
        LEFT JOIN software_source ss ON ss.id = r.source_id
-       WHERE r.software_id = ?
-       ORDER BY COALESCE(r.published_at, r.first_seen_at) DESC, r.version DESC LIMIT 150`,
+       WHERE r.software_id = ?`,
     )
     .all(id) as ReleaseRow[];
-  const releases = releaseRows.map((release) => ({
-    id: release.id,
-    softwareId: release.software_id,
-    version: release.version,
-    channel: release.channel,
-    title: release.title,
-    notes: release.notes,
-    url: release.url,
-    publishedAt: release.published_at,
-    firstSeenAt: release.first_seen_at,
-    sourceType: release.source_type,
-  }));
+  const releases = releaseRows
+    .map((release) => ({
+      id: release.id,
+      softwareId: release.software_id,
+      version: release.version,
+      channel: release.channel,
+      title: release.title,
+      notes: release.notes,
+      url: release.url,
+      publishedAt: release.published_at,
+      firstSeenAt: release.first_seen_at,
+      sourceType: release.source_type,
+    }))
+    .sort(compareReleaseItems)
+    .slice(0, 150);
 
   const advisories = getAdvisoryRowsForSoftware(id).map(mapAdvisory);
   const events = listEvents({ softwareId: id, limit: 60 });
@@ -378,7 +383,7 @@ export function getSoftwareDetail(id: string): SoftwareDetail | null {
          FROM sync_job j
          JOIN software s ON s.id = j.software_id
          LEFT JOIN software_source ss ON ss.id = j.source_id
-         WHERE j.software_id = ? ORDER BY j.started_at DESC LIMIT 60`,
+         WHERE j.software_id = ? ORDER BY j.started_at DESC, j.id ASC LIMIT 60`,
       )
       .all(id) as JobRow[]
   ).map(mapJob);

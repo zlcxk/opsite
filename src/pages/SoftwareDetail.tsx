@@ -28,7 +28,6 @@ import type {
   SoftwareDetail as SoftwareDetailData,
   SyncJob,
   TechNodeListResponse,
-  VersionImpact,
 } from '@shared/types';
 import { useApi, useDocumentTitle } from '../lib/hooks';
 import { formatReleaseNotes } from '../lib/text';
@@ -74,12 +73,6 @@ const tabs = [
 type Tab = (typeof tabs)[number][0];
 
 const openStatuses: AdvisoryStatus[] = ['pending', 'to_fix', 'planned'];
-const impactOrder: Record<VersionImpact, number> = {
-  affected: 0,
-  possibly_affected: 1,
-  insufficient: 2,
-  not_affected: 3,
-};
 
 export function SoftwareDetail() {
   const { id } = useParams();
@@ -471,8 +464,6 @@ export function SoftwareDetail() {
               <div className="panel-body flush">
                 {openAdvisories.length ? (
                   openAdvisories
-                    .slice()
-                    .sort((a, b) => impactOrder[a.versionImpact] - impactOrder[b.versionImpact])
                     .slice(0, 5)
                     .map((advisory) => {
                       const impact = impactMeta[advisory.versionImpact];
@@ -932,8 +923,6 @@ export function SoftwareDetail() {
           ) : (
             <div className="data-list">
               {(advisoryFilter === 'open' ? openAdvisories : data.advisories)
-                .slice()
-                .sort((a, b) => impactOrder[a.versionImpact] - impactOrder[b.versionImpact])
                 .map((advisory) => {
                   const impact = impactMeta[advisory.versionImpact];
                   const severity = severityMeta[advisory.severity];

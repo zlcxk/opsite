@@ -48,24 +48,19 @@ export function Vulnerabilities() {
 
   const filtered = useMemo(() => {
     const search = query.trim().toLowerCase();
-    return advisories
-      .filter((item) => {
-        if (status === 'open' && resolvedStatuses.includes(item.status)) return false;
-        if (status !== 'open' && status !== 'all' && item.status !== status) return false;
-        if (priority !== 'all' && item.priority !== priority) return false;
-        if (softwareId !== 'all' && item.softwareId !== softwareId) return false;
-        if (kevOnly && !item.kev) return false;
-        if (!search) return true;
-        return (
-          item.identifier.toLowerCase().includes(search) ||
-          item.title.toLowerCase().includes(search) ||
-          (item.softwareName ?? '').toLowerCase().includes(search)
-        );
-      })
-      .sort((a, b) => {
-        const rank = { P0: 0, P1: 1, P2: 2, P3: 3 };
-        return rank[a.priority] - rank[b.priority];
-      });
+    return advisories.filter((item) => {
+      if (status === 'open' && resolvedStatuses.includes(item.status)) return false;
+      if (status !== 'open' && status !== 'all' && item.status !== status) return false;
+      if (priority !== 'all' && item.priority !== priority) return false;
+      if (softwareId !== 'all' && item.softwareId !== softwareId) return false;
+      if (kevOnly && !item.kev) return false;
+      if (!search) return true;
+      return (
+        item.identifier.toLowerCase().includes(search) ||
+        item.title.toLowerCase().includes(search) ||
+        (item.softwareName ?? '').toLowerCase().includes(search)
+      );
+    });
   }, [advisories, status, priority, softwareId, kevOnly, query]);
 
   const updateStatus = async (advisory: Advisory, next: AdvisoryStatus) => {

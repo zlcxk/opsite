@@ -57,17 +57,6 @@ export function Versions() {
       groups.set(item.softwareId, list);
     }
     return [...groups.values()]
-      .map((items) =>
-        items.sort((a, b) => {
-          // Current cycle first, then support status, then cycle name.
-          if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-          if (a.supportStatus !== b.supportStatus) {
-            const rank = { unknown: 0, supported: 1, approaching_eol: 2, eol: 3 };
-            return rank[a.supportStatus] - rank[b.supportStatus];
-          }
-          return b.cycle.localeCompare(a.cycle, undefined, { numeric: true });
-        }),
-      )
       .sort((a, b) => a[0].softwareName.localeCompare(b[0].softwareName, 'zh-CN'));
   }, [lifecycle.data]);
 

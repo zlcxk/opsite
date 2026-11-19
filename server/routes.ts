@@ -20,6 +20,7 @@ import type {
 } from '../shared/types.js';
 import { catalog, findCatalogItem } from './catalog.js';
 import { db, getSettingsObject, nowIso, setSetting } from './db.js';
+import { compareLifecycleFeedItems, compareReleaseItems } from './lib/order.js';
 import { compareVersions, findCycle } from './lib/version.js';
 import { getAdvisory, listAdvisories, setAdvisoryStatus, refreshAdvisoryInsights } from './services/advisories.js';
 import { getDashboard } from './services/dashboard.js';
@@ -1039,8 +1040,7 @@ router.get('/releases', (req, res) => {
               s.current_version, ss.type AS source_type
        FROM release_record r JOIN software s ON s.id = r.software_id
        LEFT JOIN software_source ss ON ss.id = r.source_id
-       WHERE ${clauses.join(' AND ')}
-       ORDER BY COALESCE(r.published_at, r.first_seen_at) DESC LIMIT 200`,
+       WHERE ${clauses.join(' AND ')}`,
     )
     .all(...params) as Array<Record<string, any>>;
 
@@ -1065,7 +1065,7 @@ router.get('/releases', (req, res) => {
         compareVersions(row.version, row.current_version) > 0,
     ),
   }));
-  res.json(items);
+  res.json(items.sort(compareReleaseItems).slice(0, 200));
 });
 
 router.get('/lifecycle', (req, res) => {
@@ -1080,8 +1080,7 @@ router.get('/lifecycle', (req, res) => {
     .prepare(
       `SELECT l.*, s.name AS software_name, s.logo_url AS software_logo_url, s.current_version
        FROM lifecycle_record l JOIN software s ON s.id = l.software_id
-       WHERE ${clauses.join(' AND ')}
-       ORDER BY s.name, l.cycle DESC`,
+       WHERE ${clauses.join(' AND ')}`,
     )
     .all(...params) as Array<Record<string, any>>;
 
@@ -1108,7 +1107,7 @@ router.get('/lifecycle', (req, res) => {
       note: isCurrent ? '当前使用版本' : null,
     };
   });
-  res.json(items);
+  res.json(items.sort(compareLifecycleFeedItems));
 });
 
 router.get('/jobs', (req, res) => {

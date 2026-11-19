@@ -6,6 +6,7 @@ import type {
   VersionImpact,
 } from '../../shared/types.js';
 import { db, nowIso } from '../db.js';
+import { compareAdvisoryRows } from '../lib/order.js';
 import { computePriority, isOpenAdvisory, normalizeSeverity, severityRank } from '../lib/severity.js';
 import { evaluateVersionImpact, formatStructuredRange } from '../lib/version.js';
 import type { RawAdvisory } from '../adapters/types.js';
@@ -316,18 +317,17 @@ export function setAdvisoryStatus(advisoryId: string, status: AdvisoryStatus): v
 }
 
 export function getAdvisoryRowsForSoftware(softwareId: string): AdvisoryDbRow[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT a.*, COALESCE(us.status, 'pending') AS status, s.current_version,
               s.name AS software_name
        FROM security_advisory a
        JOIN software s ON s.id = a.software_id
        LEFT JOIN advisory_user_state us ON us.advisory_id = a.id
-       WHERE a.software_id = ?
-       ORDER BY CASE a.priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
-                COALESCE(a.published_at, a.created_at) DESC`,
+       WHERE a.software_id = ?`,
     )
     .all(softwareId) as AdvisoryDbRow[];
+  return rows.sort(compareAdvisoryRows);
 }
 
 export function listAdvisories(options: {
@@ -355,8 +355,8 @@ export function listAdvisories(options: {
   if (options.openOnly) {
     clauses.push("COALESCE(us.status, 'pending') NOT IN ('fixed', 'not_affected', 'ignored')");
   }
-  const limit = Math.min(options.limit ?? 100, 300);
-  const offset = options.offset ?? 0;
+  const limit = Math.max(0, Math.min(options.limit ?? 100, 300));
+  const offset = Math.max(0, options.offset ?? 0);
   const rows = db
     .prepare(
       `SELECT a.*, COALESCE(us.status, 'pending') AS status, s.current_version,
@@ -364,14 +364,14 @@ export function listAdvisories(options: {
        FROM security_advisory a
        JOIN software s ON s.id = a.software_id
        LEFT JOIN advisory_user_state us ON us.advisory_id = a.id
-       WHERE ${clauses.join(' AND ')}
-       ORDER BY CASE a.priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
-                COALESCE(a.published_at, a.created_at) DESC
-       LIMIT ? OFFSET ?`,
+       WHERE ${clauses.join(' AND ')}`,
     )
-    .all(...params, limit, offset) as AdvisoryDbRow[];
+    .all(...params) as AdvisoryDbRow[];
 
-  return rows.map((row) => mapAdvisory(row));
+  return rows
+    .sort(compareAdvisoryRows)
+    .slice(offset, offset + limit)
+    .map((row) => mapAdvisory(row));
 }
 
 export function getAdvisory(id: string): Advisory | null {
